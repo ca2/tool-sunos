@@ -1,6 +1,6 @@
 #!/usr/bin/bash
 
-cp $HOME/cmake/operating_system/tool-freebsd/bin/_distro__desktop_environment_and_release
+cp $HOME/code/operating_system/tool/bin/_distro__desktop_environment_and_release
 
 patch_rc_file()
 {
@@ -32,7 +32,7 @@ patch_rc_file()
       echo "export GPG_TTY=\$(tty)" >> $RC_FILE
       echo "" >> $RC_FILE
       echo "" >> $RC_FILE
-      echo "PATH=\$HOME/cmake/operating_system/tool-freebsd/bin:\$HOME/bin:/opt/csw/bin:\$PATH" >> $RC_FILE
+      echo "PATH=\$HOME/code/operating_system/tool/bin:\$HOME/bin:/opt/csw/bin:\$PATH" >> $RC_FILE
       echo "" >> $RC_FILE
       echo "" >> $RC_FILE
       echo "export PATH" >> $RC_FILE
@@ -79,7 +79,7 @@ patch_shrc()
 }
 
 
-. $HOME/cmake/operating_system/tool-freebsd/bin/_distro__desktop_environment_and_release
+. $HOME/code/operating_system/tool/bin/_distro__desktop_environment_and_release
 
 
 patch_profile
