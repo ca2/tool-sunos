@@ -18,6 +18,45 @@ OWNED_REMOTE_REGEX='github\.com[:/](ca2|cpp-port)/'
 # ----------------------------------------------------------------------
 #
 
+ERROR_COLOR=""
+SUCCESS_COLOR=""
+ERROR_RESET=""
+SUCCESS_RESET=""
+
+
+if [ -z "${NO_COLOR+x}" ] && [ "${TERM:-}" != "dumb" ]; then
+
+    if [ -t 2 ]; then
+        ERROR_COLOR=$'\033[1;31m'
+        ERROR_RESET=$'\033[0m'
+    fi
+
+    if [ -t 1 ]; then
+        SUCCESS_COLOR=$'\033[1;32m'
+        SUCCESS_RESET=$'\033[0m'
+    fi
+
+fi
+
+
+print_error()
+{
+    printf '%s%s%s\n' \
+        "$ERROR_COLOR" \
+        "$*" \
+        "$ERROR_RESET" >&2
+}
+
+
+print_success()
+{
+    printf '%s%s%s\n' \
+        "$SUCCESS_COLOR" \
+        "$*" \
+        "$SUCCESS_RESET"
+}
+
+
 is_owned_remote()
 {
     local url="$1"
@@ -372,7 +411,7 @@ update_owned_repository()
     if ! repository_is_clean; then
 
         echo
-        echo "ERROR: Repository has local changes:"
+        print_error "ERROR: Repository has local changes:"
         echo "   $display_name"
         echo
 
@@ -415,7 +454,7 @@ update_owned_repository()
 
     if [ -z "$branch" ]; then
 
-        echo "ERROR: Could not determine branch for:"
+        print_error "ERROR: Could not determine branch for:"
         echo "   $display_name"
 
         return 1
@@ -431,7 +470,7 @@ update_owned_repository()
         --verify \
         --quiet "refs/remotes/origin/$branch"; then
 
-        echo "ERROR: Remote branch does not exist:"
+        print_error "ERROR: Remote branch does not exist:"
         echo "   origin/$branch"
 
         return 1
@@ -486,7 +525,7 @@ update_owned_repository()
     else
 
         echo
-        echo "ERROR: Local and remote branches have diverged:"
+        print_error "ERROR: Local and remote branches have diverged:"
         echo "   $display_name"
         echo
         echo "This repository must be merged before checkout can continue."
@@ -530,7 +569,7 @@ update_third_party_repository()
     if ! repository_tree_is_clean; then
 
         echo
-        echo "ERROR: Third-party repository tree is not clean:"
+        print_error "ERROR: Third-party repository tree is not clean:"
         echo "   $display_name"
         echo
         echo "Nothing was changed."
@@ -567,7 +606,7 @@ update_third_party_repository()
             --verify \
             --quiet "refs/remotes/origin/$branch"; then
 
-            echo "ERROR: Remote branch does not exist:"
+            print_error "ERROR: Remote branch does not exist:"
             echo "   origin/$branch"
 
             return 1
@@ -618,7 +657,7 @@ update_third_party_repository()
         elif [ "$REMOTE" = "$BASE" ]; then
 
             echo
-            echo "ERROR: Third-party repository contains local commits:"
+            print_error "ERROR: Third-party repository contains local commits:"
             echo "   $display_name"
             echo
             echo "It is read-only, so checkout will not discard them automatically."
@@ -629,7 +668,7 @@ update_third_party_repository()
         else
 
             echo
-            echo "ERROR: Third-party branch has diverged from origin/$branch:"
+            print_error "ERROR: Third-party branch has diverged from origin/$branch:"
             echo "   $display_name"
 
             return 1
@@ -668,7 +707,7 @@ update_third_party_repository()
     if ! commit_is_available_from_origin "$selected_commit"; then
 
         echo
-        echo "ERROR: Selected third-party commit is not reachable"
+        print_error "ERROR: Selected third-party commit is not reachable"
         echo "from any branch or tag advertised by origin:"
         echo "   Repository : $display_name"
         echo "   Commit     : $selected_commit"
@@ -822,7 +861,7 @@ process_owned_submodules()
 
         if [ -z "$parent_selected_sha" ]; then
 
-            echo "ERROR: Could not determine parent-selected commit for:"
+            print_error "ERROR: Could not determine parent-selected commit for:"
             echo "   $child_display"
 
             return 1
@@ -889,7 +928,7 @@ process_owned_submodules()
                 if [ -z "$selected_sha" ]; then
 
                     echo
-                    echo "ERROR: No previously recorded published commit was found for:"
+                    print_error "ERROR: No previously recorded published commit was found for:"
                     echo "   $child_display"
 
                     return 1
@@ -945,7 +984,7 @@ ROOT=$(git rev-parse \
 
 if [ -z "$ROOT" ]; then
 
-    echo "ERROR: Current directory is not inside a Git repository."
+    print_error "ERROR: Current directory is not inside a Git repository."
 
     exit 1
 
@@ -968,7 +1007,7 @@ echo "   $ROOT"
 if ! update_owned_repository "." ""; then
 
     echo
-    echo "ERROR: Could not safely update root repository."
+    print_error "ERROR: Could not safely update root repository."
 
     exit 1
 
@@ -982,9 +1021,9 @@ fi
 if ! process_owned_submodules "."; then
 
     echo
-    echo "========================================================"
-    echo "=== Checkout/update stopped because of an error. ==="
-    echo "========================================================"
+    print_error "========================================================"
+    print_error "=== Checkout/update stopped because of an error. ==="
+    print_error "========================================================"
 
     exit 1
 
@@ -992,6 +1031,6 @@ fi
 
 
 echo
-echo "========================================================"
-echo "=== Repository tree successfully updated! ==="
-echo "========================================================"
+print_success "========================================================"
+print_success "=== Repository tree successfully updated! ==="
+print_success "========================================================"

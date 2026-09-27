@@ -68,7 +68,7 @@ set +e
 
     GIT_ALLOW_PROTOCOL=file \
         "$SCRIPT_ROOT/bin/commit" "$WORK/parent"
-) > "$WORK/rejected.log" 2>&1
+) > "$WORK/rejected.stdout" 2> "$WORK/rejected.stderr"
 
 REJECTED_STATUS=$?
 
@@ -78,7 +78,32 @@ set -e
 if [ "$REJECTED_STATUS" -eq 0 ]; then
 
     echo "FAIL: commit accepted an unpublished external SHA."
-    cat "$WORK/rejected.log"
+    cat "$WORK/rejected.stdout"
+    cat "$WORK/rejected.stderr" >&2
+
+    exit 1
+
+fi
+
+
+grep -Fq \
+    "ERROR: External submodule commit is not reachable" \
+    "$WORK/rejected.stderr"
+
+if grep -Fq "ERROR:" "$WORK/rejected.stdout"; then
+
+    echo "FAIL: blocking error was written to stdout."
+
+    exit 1
+
+fi
+
+
+if grep -q $'\033' \
+    "$WORK/rejected.stdout" \
+    "$WORK/rejected.stderr"; then
+
+    echo "FAIL: redirected output contains terminal color escapes."
 
     exit 1
 
@@ -170,8 +195,20 @@ test -z "$(git -C "$WORK/parent" status --porcelain)"
 test "$(git -C "$WORK/parent/vendor" rev-parse HEAD)" = "$PUBLISHED"
 
 grep -Fq \
-    "No pending merge file exists:" \
+    "No pending merge file exists; nothing to do:" \
     "$WORK/convergence.log"
+
+grep -Fq \
+    "Recursive commit and push completed successfully." \
+    "$WORK/convergence.log"
+
+if grep -q $'\033' "$WORK/convergence.log"; then
+
+    echo "FAIL: redirected success output contains terminal color escapes."
+
+    exit 1
+
+fi
 
 
 ##
@@ -303,6 +340,7 @@ test "$(git -C "$WORK/owned-parent.git" \
 
 
 echo "PASS: unpublished external SHA was rejected: $LOCAL_ONLY"
+echo "PASS: blocking errors use stderr and redirected logs stay uncolored"
 echo "PASS: merge refused to stage the unpublished external SHA"
 echo "PASS: checkout restored the published SHA: $PUBLISHED"
 echo "PASS: repeated checkout/commit/merge runs converged cleanly"

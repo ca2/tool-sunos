@@ -17,6 +17,45 @@ DEDICATORY_FILE="$HOME/dedicatory.txt"
 OWNED_REMOTE_REGEX='github\.com[:/](ca2|cpp-port)/'
 
 
+ERROR_COLOR=""
+SUCCESS_COLOR=""
+ERROR_RESET=""
+SUCCESS_RESET=""
+
+
+if [ -z "${NO_COLOR+x}" ] && [ "${TERM:-}" != "dumb" ]; then
+
+    if [ -t 2 ]; then
+        ERROR_COLOR=$'\033[1;31m'
+        ERROR_RESET=$'\033[0m'
+    fi
+
+    if [ -t 1 ]; then
+        SUCCESS_COLOR=$'\033[1;32m'
+        SUCCESS_RESET=$'\033[0m'
+    fi
+
+fi
+
+
+print_error()
+{
+    printf '%s%s%s\n' \
+        "$ERROR_COLOR" \
+        "$*" \
+        "$ERROR_RESET" >&2
+}
+
+
+print_success()
+{
+    printf '%s%s%s\n' \
+        "$SUCCESS_COLOR" \
+        "$*" \
+        "$SUCCESS_RESET"
+}
+
+
 #
 # ----------------------------------------------------------------------
 # Utility functions
@@ -247,7 +286,7 @@ verify_external_submodules()
             >/dev/null 2>&1; then
 
             echo
-            echo "ERROR: Cannot validate uninitialized external submodule:"
+            print_error "ERROR: Cannot validate uninitialized external submodule:"
             echo "   $submodule_path"
 
             return 1
@@ -264,7 +303,7 @@ verify_external_submodules()
         if [ -z "$commit" ]; then
 
             echo
-            echo "ERROR: Could not read staged gitlink for:"
+            print_error "ERROR: Could not read staged gitlink for:"
             echo "   $submodule_path"
 
             return 1
@@ -282,7 +321,7 @@ verify_external_submodules()
             "$commit"; then
 
             echo
-            echo "ERROR: Refusing to commit an external gitlink that"
+            print_error "ERROR: Refusing to commit an external gitlink that"
             echo "is not reachable from any advertised origin ref:"
             echo "   Path   : $submodule_path"
             echo "   URL    : $submodule_url"
@@ -308,7 +347,7 @@ verify_external_submodules()
                 "$worktree_commit"; then
 
                 echo
-                echo "ERROR: Refusing to stage an external submodule"
+                print_error "ERROR: Refusing to stage an external submodule"
                 echo "worktree HEAD that is not advertised by origin:"
                 echo "   Path   : $submodule_path"
                 echo "   URL    : $submodule_url"
@@ -406,7 +445,7 @@ ensure_mergetool_available()
 
 
     echo
-    echo "ERROR: Merge conflicts require a merge tool, but this"
+    print_error "ERROR: Merge conflicts require a merge tool, but this"
     echo "configured tool was not found:"
     echo
     echo "   $MERGE_TOOL"
@@ -484,7 +523,7 @@ commit_propagated_child_changes()
     if [ ! -f "$DEDICATORY_FILE" ]; then
 
         echo
-        echo "ERROR: Commit message file does not exist:"
+        print_error "ERROR: Commit message file does not exist:"
         echo "   $DEDICATORY_FILE"
 
         return 1
@@ -525,7 +564,7 @@ commit_propagated_child_changes()
         -F "$DEDICATORY_FILE"; then
 
         echo
-        echo "ERROR: Could not commit propagated child changes."
+        print_error "ERROR: Could not commit propagated child changes."
 
         return 1
 
@@ -564,7 +603,7 @@ resolve_conflicts_wizard()
         if [ -z "$conflict_file" ]; then
 
             echo
-            echo "ERROR: Git reports conflicts but no conflicted file"
+            print_error "ERROR: Git reports conflicts but no conflicted file"
             echo "could be determined."
 
             return 1
@@ -724,7 +763,7 @@ merge_repository()
         --is-inside-work-tree \
         >/dev/null 2>&1; then
 
-        echo "ERROR: Not a Git repository:"
+        print_error "ERROR: Not a Git repository:"
         echo "   $repository"
 
         popd
@@ -773,7 +812,7 @@ merge_repository()
         if ! git commit --no-edit; then
 
             echo
-            echo "ERROR: Could not complete existing merge."
+            print_error "ERROR: Could not complete existing merge."
 
             popd
             return 1
@@ -820,7 +859,7 @@ merge_repository()
     if ! git fetch origin; then
 
         echo
-        echo "ERROR: Could not fetch origin."
+        print_error "ERROR: Could not fetch origin."
 
         popd
 
@@ -835,7 +874,7 @@ merge_repository()
         "refs/remotes/origin/$branch"; then
 
         echo
-        echo "ERROR: Remote branch does not exist:"
+        print_error "ERROR: Remote branch does not exist:"
         echo "   origin/$branch"
 
         popd
@@ -902,7 +941,7 @@ merge_repository()
             if ! git commit --no-edit; then
 
                 echo
-                echo "ERROR: Could not complete merge commit."
+                print_error "ERROR: Could not complete merge commit."
 
                 popd
                 return 1
@@ -925,7 +964,7 @@ merge_repository()
     if ! has_conflicts; then
 
         echo
-        echo "ERROR: git merge failed but Git reports no file conflicts."
+        print_error "ERROR: git merge failed but Git reports no file conflicts."
         echo
         echo "Inspect manually:"
         echo "   $repository"
@@ -956,7 +995,7 @@ merge_repository()
     if has_conflicts; then
 
         echo
-        echo "ERROR: unresolved conflicts remain."
+        print_error "ERROR: unresolved conflicts remain."
 
         popd
 
@@ -983,7 +1022,7 @@ merge_repository()
     if ! git commit --no-edit; then
 
         echo
-        echo "ERROR: Could not complete merge commit."
+        print_error "ERROR: Could not complete merge commit."
 
         popd
 
@@ -1015,7 +1054,7 @@ ROOT=$(git rev-parse \
 
 if [ -z "$ROOT" ]; then
 
-    echo "Current directory is not inside a Git repository."
+    print_error "ERROR: Current directory is not inside a Git repository."
 
     exit 1
 
@@ -1027,7 +1066,7 @@ PENDING_PATH="$ROOT/$PENDING_FILE"
 
 if [ ! -f "$PENDING_PATH" ]; then
 
-    echo "No pending merge file exists:"
+    print_success "No pending merge file exists; nothing to do:"
     echo
     echo "   $PENDING_PATH"
 
@@ -1038,7 +1077,7 @@ fi
 
 if [ ! -s "$PENDING_PATH" ]; then
 
-    echo "Pending merge file is empty:"
+    print_success "Pending merge file is empty; nothing to do:"
     echo
     echo "   $PENDING_PATH"
 
@@ -1129,7 +1168,7 @@ while IFS= read -r relative_path; do
     if [ ! -d "$repository" ]; then
 
         echo
-        echo "ERROR: Repository directory does not exist:"
+        print_error "ERROR: Repository directory does not exist:"
         echo "   $repository"
 
         failed=1
@@ -1144,15 +1183,15 @@ while IFS= read -r relative_path; do
         "$relative_path"; then
 
         echo
-        echo "============================================================"
-        echo "Merge wizard stopped."
+        print_error "============================================================"
+        print_error "Merge wizard stopped because of an error."
         echo
         echo "Repository:"
         echo "   $relative_path"
         echo
         echo "Remaining pending repositories are still recorded in:"
         echo "   $PENDING_PATH"
-        echo "============================================================"
+        print_error "============================================================"
 
         failed=1
 
@@ -1186,9 +1225,9 @@ fi
 
 
 echo
-echo "============================================================"
-echo "All pending merges were completed successfully."
-echo "============================================================"
+print_success "============================================================"
+print_success "All pending merges were completed successfully."
+print_success "============================================================"
 echo
 echo "Run commit again to record any final parent gitlink changes"
 echo "and push the complete repository hierarchy."
