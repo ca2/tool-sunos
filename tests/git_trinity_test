@@ -1,0 +1,296 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+
+SCRIPT_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+
+WORK=$(mktemp -d)
+
+trap 'rm -rf "$WORK"' EXIT
+
+
+export HOME="$WORK/home"
+
+mkdir -p "$HOME"
+
+printf '%s\n' 'git trinity test commit' > "$HOME/dedicatory.txt"
+
+export GIT_AUTHOR_NAME='Git Trinity Test'
+export GIT_AUTHOR_EMAIL='git-trinity@example.invalid'
+export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
+export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
+
+
+git init --bare --quiet "$WORK/external.git"
+git clone --quiet "$WORK/external.git" "$WORK/external-work"
+git -C "$WORK/external-work" switch --quiet -c main
+git -C "$WORK/external-work" commit --quiet --allow-empty -m initial
+git -C "$WORK/external-work" push --quiet -u origin main
+git -C "$WORK/external.git" symbolic-ref HEAD refs/heads/main
+
+PUBLISHED=$(git -C "$WORK/external-work" rev-parse HEAD)
+
+
+git init --bare --quiet "$WORK/parent.git"
+git clone --quiet "$WORK/parent.git" "$WORK/parent"
+git -C "$WORK/parent" switch --quiet -c main
+git -C "$WORK/parent" \
+    -c protocol.file.allow=always \
+    submodule add \
+    --quiet \
+    "$WORK/external.git" \
+    vendor
+git -C "$WORK/parent" commit --quiet -m initial
+git -C "$WORK/parent" push --quiet -u origin main
+git -C "$WORK/parent.git" symbolic-ref HEAD refs/heads/main
+
+PARENT_BEFORE=$(git -C "$WORK/parent" rev-parse HEAD)
+
+
+#
+# Reproduce the incident: the external submodule has a local-only commit.
+#
+
+git -C "$WORK/parent/vendor" \
+    commit \
+    --quiet \
+    --allow-empty \
+    -m local-only
+
+LOCAL_ONLY=$(git -C "$WORK/parent/vendor" rev-parse HEAD)
+
+
+set +e
+
+(
+    cd "$WORK/parent"
+
+    GIT_ALLOW_PROTOCOL=file \
+        "$SCRIPT_ROOT/bin/commit" "$WORK/parent"
+) > "$WORK/rejected.log" 2>&1
+
+REJECTED_STATUS=$?
+
+set -e
+
+
+if [ "$REJECTED_STATUS" -eq 0 ]; then
+
+    echo "FAIL: commit accepted an unpublished external SHA."
+    cat "$WORK/rejected.log"
+
+    exit 1
+
+fi
+
+
+test "$(git -C "$WORK/parent" rev-parse HEAD)" = "$PARENT_BEFORE"
+test "$(git -C "$WORK/parent.git" rev-parse refs/heads/main)" = "$PARENT_BEFORE"
+test "$(git -C "$WORK/parent/vendor" rev-parse HEAD)" = "$LOCAL_ONLY"
+
+
+#
+# Merge consumes commit's pending file, but must still reject the same
+# invalid gitlink before staging or committing it.
+#
+
+printf '%s\n' '.' > "$WORK/parent/commit_pending_merges.txt"
+
+set +e
+
+(
+    cd "$WORK/parent"
+
+    GIT_ALLOW_PROTOCOL=file \
+        "$SCRIPT_ROOT/bin/merge"
+) > "$WORK/merge-rejected.log" 2>&1
+
+MERGE_REJECTED_STATUS=$?
+
+set -e
+
+
+test "$MERGE_REJECTED_STATUS" -ne 0
+test "$(git -C "$WORK/parent" rev-parse HEAD)" = "$PARENT_BEFORE"
+test "$(git -C "$WORK/parent" ls-files --stage vendor |
+    awk '{print $2}')" = "$PUBLISHED"
+
+rm -f "$WORK/parent/commit_pending_merges.txt"
+
+
+#
+# Checkout must be allowed to repair gitlink-only dirtiness.
+#
+
+(
+    cd "$WORK/parent"
+
+    GIT_ALLOW_PROTOCOL=file \
+        "$SCRIPT_ROOT/bin/checkout"
+) > "$WORK/checkout.log" 2>&1
+
+
+test "$(git -C "$WORK/parent/vendor" rev-parse HEAD)" = "$PUBLISHED"
+
+
+#
+# The three commands must then converge, and repeated runs must be no-ops.
+#
+
+(
+    cd "$WORK/parent"
+
+    GIT_ALLOW_PROTOCOL=file \
+        "$SCRIPT_ROOT/bin/commit" "$WORK/parent"
+
+    "$SCRIPT_ROOT/bin/merge"
+
+    GIT_ALLOW_PROTOCOL=file \
+        "$SCRIPT_ROOT/bin/checkout"
+
+    GIT_ALLOW_PROTOCOL=file \
+        "$SCRIPT_ROOT/bin/commit" "$WORK/parent"
+
+    "$SCRIPT_ROOT/bin/merge"
+) > "$WORK/convergence.log" 2>&1
+
+
+test -z "$(git -C "$WORK/parent" status --porcelain)"
+test "$(git -C "$WORK/parent/vendor" rev-parse HEAD)" = "$PUBLISHED"
+
+grep -Fq \
+    "No pending merge file exists:" \
+    "$WORK/convergence.log"
+
+
+##
+## Owned-submodule publication ordering.
+##
+
+git init --bare --quiet "$WORK/owned.git"
+git clone --quiet "$WORK/owned.git" "$WORK/owned-work"
+git -C "$WORK/owned-work" switch --quiet -c main
+git -C "$WORK/owned-work" commit --quiet --allow-empty -m initial
+git -C "$WORK/owned-work" push --quiet -u origin main
+git -C "$WORK/owned.git" symbolic-ref HEAD refs/heads/main
+
+
+git init --bare --quiet "$WORK/owned-parent.git"
+git clone --quiet "$WORK/owned-parent.git" "$WORK/owned-parent"
+git -C "$WORK/owned-parent" switch --quiet -c main
+git -C "$WORK/owned-parent" \
+    -c protocol.file.allow=always \
+    submodule add \
+    --quiet \
+    "$WORK/owned.git" \
+    child
+
+#
+# Make the parent classify this child as writable while retaining the
+# disposable local origin in the initialized child repository.
+#
+
+git -C "$WORK/owned-parent" config \
+    --file .gitmodules \
+    submodule.child.url \
+    git@github.com:ca2/owned-child
+
+git -C "$WORK/owned-parent" add .gitmodules child
+git -C "$WORK/owned-parent" commit --quiet -m initial
+git -C "$WORK/owned-parent" push --quiet -u origin main
+git -C "$WORK/owned-parent.git" symbolic-ref HEAD refs/heads/main
+
+
+git -C "$WORK/owned-parent/child" \
+    commit \
+    --quiet \
+    --allow-empty \
+    -m child-change
+
+OWNED_CHILD=$(git -C "$WORK/owned-parent/child" rev-parse HEAD)
+
+
+(
+    cd "$WORK/owned-parent"
+
+    GIT_ALLOW_PROTOCOL=file \
+        "$SCRIPT_ROOT/bin/commit" "$WORK/owned-parent"
+) > "$WORK/owned-success.log" 2>&1
+
+
+test "$(git -C "$WORK/owned.git" rev-parse refs/heads/main)" = \
+    "$OWNED_CHILD"
+
+test "$(git -C "$WORK/owned-parent.git" \
+    ls-tree refs/heads/main child |
+    awk '{print $3}')" = "$OWNED_CHILD"
+
+
+#
+# A failed child push must stop before the parent is published.
+#
+
+PUBLISHED_PARENT=$(git -C "$WORK/owned-parent.git" \
+    rev-parse refs/heads/main)
+
+git -C "$WORK/owned-parent/child" \
+    commit \
+    --quiet \
+    --allow-empty \
+    -m temporarily-unpublishable
+
+RETRY_CHILD=$(git -C "$WORK/owned-parent/child" rev-parse HEAD)
+
+git -C "$WORK/owned-parent/child" remote set-url origin \
+    "$WORK/missing-owned.git"
+
+
+set +e
+
+(
+    cd "$WORK/owned-parent"
+
+    GIT_ALLOW_PROTOCOL=file \
+        "$SCRIPT_ROOT/bin/commit" "$WORK/owned-parent"
+) > "$WORK/owned-rejected.log" 2>&1
+
+OWNED_REJECTED_STATUS=$?
+
+set -e
+
+
+test "$OWNED_REJECTED_STATUS" -ne 0
+test "$(git -C "$WORK/owned-parent.git" rev-parse refs/heads/main)" = \
+    "$PUBLISHED_PARENT"
+
+
+#
+# Restore connectivity and prove the same local state can be retried.
+#
+
+git -C "$WORK/owned-parent/child" remote set-url origin \
+    "$WORK/owned.git"
+
+(
+    cd "$WORK/owned-parent"
+
+    GIT_ALLOW_PROTOCOL=file \
+        "$SCRIPT_ROOT/bin/commit" "$WORK/owned-parent"
+) > "$WORK/owned-retry.log" 2>&1
+
+
+test "$(git -C "$WORK/owned.git" rev-parse refs/heads/main)" = \
+    "$RETRY_CHILD"
+
+test "$(git -C "$WORK/owned-parent.git" \
+    ls-tree refs/heads/main child |
+    awk '{print $3}')" = "$RETRY_CHILD"
+
+
+echo "PASS: unpublished external SHA was rejected: $LOCAL_ONLY"
+echo "PASS: merge refused to stage the unpublished external SHA"
+echo "PASS: checkout restored the published SHA: $PUBLISHED"
+echo "PASS: repeated checkout/commit/merge runs converged cleanly"
+echo "PASS: owned child was published before its parent gitlink"
+echo "PASS: failed child push blocked parent; retry converged cleanly"

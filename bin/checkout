@@ -26,9 +26,62 @@ is_owned_remote()
 }
 
 
+commit_is_available_from_origin()
+{
+    local commit="$1"
+    local remote_tags
+
+
+    if ! git fetch \
+        --prune \
+        origin \
+        '+refs/heads/*:refs/remotes/origin/*'; then
+
+        return 1
+
+    fi
+
+
+    if git for-each-ref \
+        --format='%(refname)' \
+        --contains="$commit" \
+        refs/remotes/origin |
+        grep -q .; then
+
+        return 0
+
+    fi
+
+
+    remote_tags=$(git ls-remote \
+        --tags \
+        origin \
+        2>/dev/null || true)
+
+
+    if printf '%s\n' "$remote_tags" |
+        awk '{print $1}' |
+        grep -Fqx -- "$commit"; then
+
+        return 0
+
+    fi
+
+
+    return 1
+}
+
+
 repository_is_clean()
 {
-    git diff --quiet &&
+    #
+    # A child HEAD moving makes its parent look dirty. That gitlink
+    # drift is exactly what this command may need to repair, so ignore
+    # unstaged submodule differences here. Ordinary source edits,
+    # staged changes, and untracked files still block checkout.
+    #
+
+    git diff --ignore-submodules=all --quiet &&
     git diff --cached --quiet &&
     [ -z "$(git ls-files --others --exclude-standard)" ]
 }
@@ -52,7 +105,7 @@ repository_tree_is_clean()
     if [ -f .gitmodules ]; then
 
         if ! git submodule foreach --quiet --recursive '
-            git diff --quiet &&
+            git diff --ignore-submodules=all --quiet &&
             git diff --cached --quiet &&
             [ -z "$(git ls-files --others --exclude-standard)" ]
         '; then
@@ -332,6 +385,7 @@ update_third_party_repository()
     local parent_selected_sha="$3"
 
     local branch
+    local selected_commit
 
 
     echo
@@ -472,6 +526,26 @@ update_third_party_repository()
         git checkout \
             --force \
             "$parent_selected_sha"
+
+    fi
+
+
+    selected_commit=$(git rev-parse HEAD)
+
+
+    echo "Verifying selected third-party commit is published:"
+    echo "   $selected_commit"
+
+
+    if ! commit_is_available_from_origin "$selected_commit"; then
+
+        echo
+        echo "ERROR: Selected third-party commit is not reachable"
+        echo "from any branch or tag advertised by origin:"
+        echo "   Repository : $display_name"
+        echo "   Commit     : $selected_commit"
+
+        return 1
 
     fi
 

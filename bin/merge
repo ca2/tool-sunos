@@ -14,6 +14,8 @@ MERGE_TOOL="${MERGE_TOOL:-meld}"
 PENDING_FILE="commit_pending_merges.txt"
 DEDICATORY_FILE="$HOME/dedicatory.txt"
 
+OWNED_REMOTE_REGEX='github\.com[:/](ca2|cpp-port)/'
+
 
 #
 # ----------------------------------------------------------------------
@@ -35,7 +37,18 @@ popd()
 
 get_branch()
 {
+    local configured_branch="${1:-}"
     local branch
+
+
+    if [ -n "$configured_branch" ] &&
+       [ "$configured_branch" != "." ]; then
+
+        printf '%s\n' "$configured_branch"
+
+        return 0
+
+    fi
 
 
     branch=$(git symbolic-ref \
@@ -91,6 +104,195 @@ get_branch()
 
 
     printf '%s\n' "main"
+}
+
+
+is_owned_remote()
+{
+    local url="$1"
+
+    [[ "$url" =~ $OWNED_REMOTE_REGEX ]]
+}
+
+
+commit_is_available_from_origin()
+{
+    local directory="$1"
+    local commit="$2"
+    local remote_tags
+
+
+    if ! git -C "$directory" fetch \
+        --prune \
+        origin \
+        '+refs/heads/*:refs/remotes/origin/*'; then
+
+        return 1
+
+    fi
+
+
+    if git -C "$directory" for-each-ref \
+        --format='%(refname)' \
+        --contains="$commit" \
+        refs/remotes/origin |
+        grep -q .; then
+
+        return 0
+
+    fi
+
+
+    remote_tags=$(git -C "$directory" ls-remote \
+        --tags \
+        origin \
+        2>/dev/null || true)
+
+
+    if printf '%s\n' "$remote_tags" |
+        awk '{print $1}' |
+        grep -Fqx -- "$commit"; then
+
+        return 0
+
+    fi
+
+
+    return 1
+}
+
+
+verify_external_submodules()
+{
+    local key
+    local submodule_path
+    local submodule_name
+    local submodule_url
+    local commit
+    local worktree_commit
+
+
+    if [ ! -f .gitmodules ]; then
+
+        return 0
+
+    fi
+
+
+    while IFS=' ' read -r key submodule_path; do
+
+        if [ -z "${key:-}" ] ||
+           [ -z "${submodule_path:-}" ]; then
+
+            continue
+
+        fi
+
+
+        submodule_name="${key#submodule.}"
+        submodule_name="${submodule_name%.path}"
+
+        submodule_url=$(git config \
+            --file .gitmodules \
+            --get "submodule.${submodule_name}.url" \
+            2>/dev/null || true)
+
+
+        if is_owned_remote "$submodule_url"; then
+
+            continue
+
+        fi
+
+
+        if ! git -C "$submodule_path" rev-parse \
+            --is-inside-work-tree \
+            >/dev/null 2>&1; then
+
+            echo
+            echo "ERROR: Cannot validate uninitialized external submodule:"
+            echo "   $submodule_path"
+
+            return 1
+
+        fi
+
+
+        commit=$(git ls-files \
+            --stage \
+            -- "$submodule_path" |
+            awk '$1 == "160000" { print $2; exit }')
+
+
+        if [ -z "$commit" ]; then
+
+            echo
+            echo "ERROR: Could not read staged gitlink for:"
+            echo "   $submodule_path"
+
+            return 1
+
+        fi
+
+
+        echo "Verifying external submodule commit is published:"
+        echo "   $submodule_path"
+        echo "   $commit"
+
+
+        if ! commit_is_available_from_origin \
+            "$submodule_path" \
+            "$commit"; then
+
+            echo
+            echo "ERROR: Refusing to commit an external gitlink that"
+            echo "is not reachable from any advertised origin ref:"
+            echo "   Path   : $submodule_path"
+            echo "   URL    : $submodule_url"
+            echo "   Commit : $commit"
+
+            return 1
+
+        fi
+
+
+        worktree_commit=$(git -C "$submodule_path" rev-parse HEAD)
+
+
+        if [ "$worktree_commit" != "$commit" ]; then
+
+            echo "Verifying external submodule worktree HEAD is published:"
+            echo "   $submodule_path"
+            echo "   $worktree_commit"
+
+
+            if ! commit_is_available_from_origin \
+                "$submodule_path" \
+                "$worktree_commit"; then
+
+                echo
+                echo "ERROR: Refusing to stage an external submodule"
+                echo "worktree HEAD that is not advertised by origin:"
+                echo "   Path   : $submodule_path"
+                echo "   URL    : $submodule_url"
+                echo "   Commit : $worktree_commit"
+
+                return 1
+
+            fi
+
+        fi
+
+
+    done < <(
+        git config \
+            --file .gitmodules \
+            --get-regexp '^submodule\..*\.path$' \
+            2>/dev/null || true
+    )
+
+
+    return 0
 }
 
 
@@ -258,7 +460,21 @@ commit_propagated_child_changes()
     echo "merging this repository."
 
 
+    if ! verify_external_submodules; then
+
+        return 1
+
+    fi
+
+
     git add -A
+
+
+    if ! verify_external_submodules; then
+
+        return 1
+
+    fi
 
 
     if git diff --cached --quiet; then
@@ -505,6 +721,14 @@ merge_repository()
         git add -A
 
 
+        if ! verify_external_submodules; then
+
+            popd
+            return 1
+
+        fi
+
+
         echo
         echo "Completing existing merge."
 
@@ -612,6 +836,7 @@ merge_repository()
 
 
     git merge \
+        --no-commit \
         --no-edit \
         "origin/$branch"
 
@@ -619,6 +844,36 @@ merge_repository()
 
 
     if [ "$merge_result" -eq 0 ]; then
+
+        git add -A
+
+
+        if ! verify_external_submodules; then
+
+            popd
+            return 1
+
+        fi
+
+
+        if [ -f "$(git rev-parse --git-path MERGE_HEAD)" ]; then
+
+            echo
+            echo "Completing validated merge commit..."
+
+
+            if ! git commit --no-edit; then
+
+                echo
+                echo "ERROR: Could not complete merge commit."
+
+                popd
+                return 1
+
+            fi
+
+        fi
+
 
         echo
         echo "Merge completed automatically with no conflicts."
@@ -674,6 +929,14 @@ merge_repository()
 
 
     git add -A
+
+
+    if ! verify_external_submodules; then
+
+        popd
+        return 1
+
+    fi
 
 
     echo

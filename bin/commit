@@ -97,6 +97,136 @@ get_branch()
 }
 
 
+commit_is_available_from_origin()
+{
+    local directory="$1"
+    local commit="$2"
+    local remote_tags
+
+
+    #
+    # Refresh every advertised branch. A commit reachable from one of
+    # these refs is reproducible by a fresh clone.
+    #
+
+    if ! git -C "$directory" fetch \
+        --prune \
+        origin \
+        '+refs/heads/*:refs/remotes/origin/*'; then
+
+        return 1
+
+    fi
+
+
+    if git -C "$directory" for-each-ref \
+        --format='%(refname)' \
+        --contains="$commit" \
+        refs/remotes/origin |
+        grep -q .; then
+
+        return 0
+
+    fi
+
+
+    #
+    # Also accept commits directly advertised by lightweight or
+    # annotated tags. The peeled ^{} line is the commit for an
+    # annotated tag.
+    #
+
+    remote_tags=$(git -C "$directory" ls-remote \
+        --tags \
+        origin \
+        2>/dev/null || true)
+
+
+    if printf '%s\n' "$remote_tags" |
+        awk '{print $1}' |
+        grep -Fqx -- "$commit"; then
+
+        return 0
+
+    fi
+
+
+    return 1
+}
+
+
+verify_external_submodule_commit()
+{
+    local submodule_path="$1"
+    local submodule_url="$2"
+    local commit
+
+
+    commit=$(git -C "$submodule_path" rev-parse HEAD)
+
+
+    echo "Verifying external submodule commit is published:"
+    echo "   $submodule_path"
+    echo "   $commit"
+
+
+    if commit_is_available_from_origin \
+        "$submodule_path" \
+        "$commit"; then
+
+        return 0
+
+    fi
+
+
+    echo
+    echo "ERROR: External submodule commit is not reachable from"
+    echo "any branch or tag advertised by its origin:"
+    echo "   Path   : $submodule_path"
+    echo "   URL    : $submodule_url"
+    echo "   Commit : $commit"
+    echo
+    echo "Refusing to record this unreproducible gitlink."
+
+
+    return 1
+}
+
+
+verify_published_head()
+{
+    local branch="$1"
+    local local_commit
+    local remote_commit
+
+
+    local_commit=$(git rev-parse HEAD)
+
+    remote_commit=$(git ls-remote \
+        --heads \
+        origin \
+        "refs/heads/$branch" |
+        awk 'NR == 1 { print $1 }')
+
+
+    if [ "$remote_commit" = "$local_commit" ]; then
+
+        return 0
+
+    fi
+
+
+    echo
+    echo "ERROR: Push returned without publishing the exact local HEAD."
+    echo "   Branch        : $branch"
+    echo "   Local HEAD    : $local_commit"
+    echo "   Remote branch : ${remote_commit:-<missing>}"
+
+
+    return 1
+}
+
+
 #
 # ----------------------------------------------------------------------
 # PHASE 1
@@ -219,6 +349,17 @@ commit_repository()
                 echo "   $submodule_path"
                 echo "Not committing inside it."
 
+
+                if ! verify_external_submodule_commit \
+                    "$submodule_path" \
+                    "$submodule_url"; then
+
+                    popd
+
+                    return 1
+
+                fi
+
             fi
 
 
@@ -227,7 +368,13 @@ commit_repository()
             # in this parent.
             #
 
-            git add -- "$submodule_path"
+            if ! git add -- "$submodule_path"; then
+
+                popd
+
+                return 1
+
+            fi
 
 
         done < <(
@@ -244,7 +391,13 @@ commit_repository()
     # Stage this repository's ordinary files and changed gitlinks.
     #
 
-    git add -A -- .
+    if ! git add -A -- .; then
+
+        popd
+
+        return 1
+
+    fi
 
 
     if git diff --cached --quiet; then
@@ -466,6 +619,15 @@ preflight_repository()
 
             fi
 
+        elif [ "$merge_status" -eq 2 ]; then
+
+            echo
+            echo "ERROR: Preflight could not verify the remote branch."
+
+            popd
+
+            return 1
+
         fi
 
     fi
@@ -532,10 +694,16 @@ preflight_repository()
             fi
 
 
-            preflight_repository \
+            if ! preflight_repository \
                 "$submodule_path" \
                 "$child_relative_path" \
-                "$submodule_branch"
+                "$submodule_branch"; then
+
+                popd
+
+                return 1
+
+            fi
 
 
         done < <(
@@ -683,12 +851,22 @@ push_repository()
 
 
     if ! git push \
+        --recurse-submodules=check \
         origin \
         "HEAD:$branch"; then
 
         echo
         echo "ERROR: Push failed:"
         echo "   $git_root"
+
+        popd
+
+        return 1
+
+    fi
+
+
+    if ! verify_published_head "$branch"; then
 
         popd
 
@@ -784,10 +962,17 @@ echo "============================================================"
 : > "$ROOT_PENDING_FILE"
 
 
-preflight_repository \
+if ! preflight_repository \
     "$BASEDIR" \
     "" \
-    ""
+    ""; then
+
+    echo
+    echo "ERROR: Recursive preflight failed. Nothing was pushed."
+
+    exit 1
+
+fi
 
 
 if [ -s "$ROOT_PENDING_FILE" ]; then
