@@ -1,0 +1,17 @@
+=== Starting Recursive Git Repository Update ===
+
+Root repository:
+   /export/home/camilo/code/console_build_tools
+
+--------------------------------------------------------
+Updating ca2/cpp-port repository:
+   .
+
+ERROR: Repository has local changes:
+   .
+
+M  operating_system
+ ? port
+ m source
+
+ERROR: Could not safely update root repository.

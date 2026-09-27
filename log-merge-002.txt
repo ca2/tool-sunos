@@ -1,0 +1,3 @@
+No pending merge file exists:
+
+   /export/home/camilo/code/console_build_tools/commit_pending_merges.txt
