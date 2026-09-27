@@ -1,0 +1,112 @@
+
+============================================================
+PHASE 1: Committing local changes recursively
+============================================================
+
+============================================================
+Committing repository:
+   /export/home/camilo/code/console_build_tools
+============================================================
+
+Descending into owned submodule:
+   operating_system
+
+============================================================
+Committing repository:
+   /export/home/camilo/code/console_build_tools/operating_system
+============================================================
+
+Descending into owned submodule:
+   operating_system-posix
+
+============================================================
+Committing repository:
+   /export/home/camilo/code/console_build_tools/operating_system/operating_system-posix
+============================================================
+No local changes to commit.
+
+Descending into owned submodule:
+   operating_system-sunos
+
+============================================================
+Committing repository:
+   /export/home/camilo/code/console_build_tools/operating_system/operating_system-sunos
+============================================================
+No local changes to commit.
+No local changes to commit.
+
+Descending into owned submodule:
+   port
+
+============================================================
+Committing repository:
+   /export/home/camilo/code/console_build_tools/port
+============================================================
+
+Descending into owned submodule:
+   base
+
+============================================================
+Committing repository:
+   /export/home/camilo/code/console_build_tools/port/base
+============================================================
+
+Descending into owned submodule:
+   id3lib
+
+============================================================
+Committing repository:
+   /export/home/camilo/code/console_build_tools/port/base/id3lib
+============================================================
+No local changes to commit.
+
+Descending into owned submodule:
+   unac
+
+============================================================
+Committing repository:
+   /export/home/camilo/code/console_build_tools/port/base/unac
+============================================================
+No local changes to commit.
+No local changes to commit.
+
+Descending into owned submodule:
+   common
+
+============================================================
+Committing repository:
+   /export/home/camilo/code/console_build_tools/port/common
+============================================================
+
+External submodule:
+   debugbreak
+Not committing inside it.
+Verifying external submodule commit is published:
+   debugbreak
+   5dcbe41d2bd4712c8014aa7e843723ad7b40fd74
+
+Descending into owned submodule:
+   nanosvg
+
+============================================================
+Committing repository:
+   /export/home/camilo/code/console_build_tools/port/common/nanosvg
+============================================================
+No local changes to commit.
+
+External submodule:
+   rapidjson
+Not committing inside it.
+Verifying external submodule commit is published:
+   rapidjson
+   c6371712bf488fc63554ba2dcba40af7703ad8a6
+
+ERROR: External submodule commit is not reachable from
+any branch or tag advertised by its origin:
+   Path   : rapidjson
+   URL    : git@github.com:Tencent/rapidjson
+   Commit : c6371712bf488fc63554ba2dcba40af7703ad8a6
+
+Refusing to record this unreproducible gitlink.
+
+ERROR: Recursive commit phase failed.
