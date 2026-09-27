@@ -31,7 +31,7 @@ if [ -z "${NO_COLOR+x}" ] && [ "${TERM:-}" != "dumb" ]; then
     fi
 
     if [ -t 1 ]; then
-        SUCCESS_COLOR=$'\033[1;32m'
+        SUCCESS_COLOR=$'\033[1;34m'
         SUCCESS_RESET=$'\033[0m'
     fi
 

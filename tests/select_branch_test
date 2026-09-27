@@ -16,6 +16,13 @@ export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
 export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
 
 
+export HOME="$WORK/home"
+
+mkdir -p "$HOME"
+
+printf '%s\n' 'select branch test commit' > "$HOME/dedicatory.txt"
+
+
 git init --quiet "$WORK/repository"
 git -C "$WORK/repository" switch --quiet -c main
 git -C "$WORK/repository" commit --quiet --allow-empty -m initial
@@ -48,6 +55,82 @@ test "$(grep -Fc 'Branches in:' "$WORK/relist.log")" -eq 2
 test "$(git -C "$WORK/repository" branch --show-current)" = "feature"
 
 
+git -C "$WORK/repository" switch --quiet main
+
+
+git init --bare --quiet "$WORK/parent.git"
+git clone --quiet "$WORK/parent.git" "$WORK/parent"
+git -C "$WORK/parent" switch --quiet -c main
+git -C "$WORK/parent" \
+    -c protocol.file.allow=always \
+    submodule add \
+    --quiet \
+    "$WORK/repository" \
+    child
+git -C "$WORK/parent" commit --quiet -m initial
+git -C "$WORK/parent" push --quiet -u origin main
+git -C "$WORK/parent.git" symbolic-ref HEAD refs/heads/main
+
+
+#
+# The submodule clone has local main and remote-only origin/feature.
+# Selecting entry 2 must create feature and record it in the direct
+# parent's .gitmodules file.
+#
+
+if ! (
+    cd "$WORK/parent/child"
+
+    printf '2\n' |
+        SELECT_BRANCH_PAGE_SIZE=20 \
+        "$SCRIPT_ROOT/bin/select_branch"
+) > "$WORK/select-submodule.log" 2>&1; then
+
+    cat "$WORK/select-submodule.log"
+
+    exit 1
+
+fi
+
+
+test "$(git -C "$WORK/parent/child" branch --show-current)" = \
+    "feature"
+
+test "$(git -C "$WORK/parent" config \
+    --file .gitmodules \
+    --get submodule.child.branch)" = "feature"
+
+
+#
+# checkout must accept the branch-only .gitmodules edit, and commit
+# must publish both the selection and its reproducible gitlink.
+#
+
+if ! (
+    cd "$WORK/parent"
+
+    GIT_ALLOW_PROTOCOL=file \
+        "$SCRIPT_ROOT/bin/checkout"
+
+    GIT_ALLOW_PROTOCOL=file \
+        "$SCRIPT_ROOT/bin/commit" "$WORK/parent"
+) > "$WORK/checkout-commit.log" 2>&1; then
+
+    cat "$WORK/checkout-commit.log"
+
+    exit 1
+
+fi
+
+
+test -z "$(git -C "$WORK/parent" status --porcelain)"
+
+test "$(git --git-dir="$WORK/parent.git" config \
+    --blob=main:.gitmodules \
+    --get submodule.child.branch)" = "feature"
+
+
 echo "PASS: empty input relisted branches"
 echo "PASS: q exited without changing branches"
 echo "PASS: a valid numbered selection switched branches"
+echo "PASS: a submodule selection was recorded and committed by its parent"

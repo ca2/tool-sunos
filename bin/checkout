@@ -32,7 +32,7 @@ if [ -z "${NO_COLOR+x}" ] && [ "${TERM:-}" != "dumb" ]; then
     fi
 
     if [ -t 1 ]; then
-        SUCCESS_COLOR=$'\033[1;32m'
+        SUCCESS_COLOR=$'\033[1;34m'
         SUCCESS_RESET=$'\033[0m'
     fi
 
@@ -180,16 +180,74 @@ index_has_only_gitlink_changes()
 }
 
 
+worktree_has_only_submodule_branch_changes()
+{
+    local path
+    local found_change=0
+
+
+    while IFS= read -r -d '' path; do
+
+        found_change=1
+
+
+        if [ "$path" != ".gitmodules" ]; then
+            return 1
+        fi
+
+
+    done < <(git diff \
+        --ignore-submodules=all \
+        --name-only \
+        -z)
+
+
+    if [ "$found_change" -eq 0 ]; then
+        return 1
+    fi
+
+
+    git diff \
+        --no-ext-diff \
+        --unified=0 \
+        -- .gitmodules |
+        awk '
+
+            /^(diff --git |index |--- |\+\+\+ |@@ )/ {
+                next
+            }
+
+            /^[+-][[:space:]]*branch[[:space:]]*=/ {
+                next
+            }
+
+            /^[+-]/ {
+                invalid = 1
+            }
+
+            END {
+                exit invalid
+            }
+
+        '
+}
+
+
 repository_is_clean()
 {
     #
     # A child HEAD moving makes its parent look dirty. That gitlink
     # drift is exactly what this command may need to repair, so ignore
-    # unstaged submodule differences here. Ordinary source edits,
-    # staged changes, and untracked files still block checkout.
+    # unstaged submodule differences here. A branch-only .gitmodules
+    # edit made by select_branch is also safe and must survive until
+    # commit records it. Other source edits, staged non-gitlink changes,
+    # and untracked files still block checkout.
     #
 
-    git diff --ignore-submodules=all --quiet &&
+    {
+        git diff --ignore-submodules=all --quiet ||
+        worktree_has_only_submodule_branch_changes
+    } &&
     [ -z "$(git ls-files --others --exclude-standard)" ] &&
     {
         git diff --cached --quiet ||

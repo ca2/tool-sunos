@@ -17,7 +17,7 @@ if [ -z "${NO_COLOR+x}" ] && [ "${TERM:-}" != "dumb" ]; then
     fi
 
     if [ -t 1 ]; then
-        SUCCESS_COLOR=$'\033[1;32m'
+        SUCCESS_COLOR=$'\033[1;34m'
         SUCCESS_RESET=$'\033[0m'
     fi
 
@@ -142,6 +142,7 @@ load_branches()
     while IFS= read -r branch; do
 
         if [ -z "$branch" ] ||
+           [[ "$branch" != */* ]] ||
            [[ "$branch" == */HEAD ]]; then
 
             continue
@@ -178,6 +179,115 @@ load_branches()
             --format='%(refname:short)' \
             refs/remotes
     )
+}
+
+
+record_selected_branch_in_parent()
+{
+    local selected_branch="$1"
+    local superproject
+    local gitmodules_path
+    local root_physical
+    local key
+    local submodule_path
+    local submodule_name=""
+    local candidate_physical
+
+
+    superproject=$(git rev-parse \
+        --show-superproject-working-tree \
+        2>/dev/null || true)
+
+
+    #
+    # A normal standalone repository has no parent in which to record
+    # the selection.
+    #
+
+    if [ -z "$superproject" ]; then
+        return 0
+    fi
+
+
+    gitmodules_path="$superproject/.gitmodules"
+
+
+    if [ ! -f "$gitmodules_path" ]; then
+
+        print_error "ERROR: The superproject has no .gitmodules file."
+        echo "   $superproject"
+
+        return 1
+
+    fi
+
+
+    root_physical=$(cd "$ROOT" && pwd -P)
+
+
+    while IFS=' ' read -r key submodule_path; do
+
+        if [ -z "${key:-}" ] ||
+           [ -z "${submodule_path:-}" ]; then
+
+            continue
+
+        fi
+
+
+        candidate_physical=$(cd \
+            "$superproject/$submodule_path" \
+            2>/dev/null && pwd -P || true)
+
+
+        if [ "$candidate_physical" != "$root_physical" ]; then
+            continue
+        fi
+
+
+        submodule_name="${key#submodule.}"
+        submodule_name="${submodule_name%.path}"
+
+        break
+
+
+    done < <(
+        git -C "$superproject" config \
+            --file .gitmodules \
+            --get-regexp '^submodule\..*\.path$' \
+            2>/dev/null || true
+    )
+
+
+    if [ -z "$submodule_name" ]; then
+
+        print_error "ERROR: Could not find this repository in its parent's .gitmodules file."
+        echo "   Repository : $ROOT"
+        echo "   Parent     : $superproject"
+
+        return 1
+
+    fi
+
+
+    if ! git -C "$superproject" config \
+        --file .gitmodules \
+        "submodule.${submodule_name}.branch" \
+        "$selected_branch"; then
+
+        print_error "ERROR: Could not record the selected branch in the parent."
+        echo "   Parent : $superproject"
+        echo "   Branch : $selected_branch"
+
+        return 1
+
+    fi
+
+
+    echo "Recorded selected branch in parent:"
+    echo "   Repository : $superproject"
+    echo "   Submodule  : $submodule_path"
+    echo "   Branch     : $selected_branch"
 }
 
 
@@ -226,6 +336,7 @@ select_branch()
     local index="$1"
     local type="${BRANCH_TYPES[$index]}"
     local ref="${BRANCH_REFS[$index]}"
+    local selected_branch
 
 
     echo
@@ -236,30 +347,37 @@ select_branch()
 
     if [ "$type" = "local" ]; then
 
-        if git checkout "$ref"; then
+        git checkout "$ref" || return 1
 
-            print_success "Branch selected successfully: $ref"
+    else
 
-            return 0
+        git checkout --track "$ref" || return 1
 
-        fi
+    fi
 
+
+    selected_branch=$(git symbolic-ref \
+        --quiet \
+        --short HEAD \
+        2>/dev/null || true)
+
+
+    if [ -z "$selected_branch" ]; then
+
+        print_error "ERROR: Checkout did not leave the repository on a branch."
 
         return 1
 
     fi
 
 
-    if git checkout --track "$ref"; then
-
-        print_success "Branch selected successfully: $ref"
-
-        return 0
-
-    fi
+    record_selected_branch_in_parent \
+        "$selected_branch" || return 1
 
 
-    return 1
+    print_success "Branch selected successfully: $selected_branch"
+
+    return 0
 }
 
 
