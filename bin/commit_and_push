@@ -1,0 +1,493 @@
+#!/usr/bin/env bash
+
+#
+# Recursively commit and push repositories owned by ca2.
+#
+# External/third-party submodules are NOT committed or pushed.
+# Their gitlink is still staged in the parent repository if it changed.
+#
+
+set -u
+
+
+DEDICATORY_FILE="$HOME/dedicatory.txt"
+
+#
+# A submodule whose URL matches this expression is considered writable/owned.
+#
+# Matches, for example:
+#
+#   git@github.com:ca2/app.git
+#   https://github.com/ca2/app.git
+#
+OWNED_REMOTE_REGEX='github\.com[:/]ca2/'
+
+
+pushd()
+{
+    command pushd "$@" > /dev/null
+}
+
+
+popd()
+{
+    command popd "$@" > /dev/null
+}
+
+
+is_owned_remote()
+{
+    local url="$1"
+
+    [[ "$url" =~ $OWNED_REMOTE_REGEX ]]
+}
+
+
+get_push_branch()
+{
+    local configured_branch="${1:-}"
+    local branch
+
+
+    #
+    # If .gitmodules explicitly says:
+    #
+    #   branch = something
+    #
+    # use that.
+    #
+
+    if [ -n "$configured_branch" ] && [ "$configured_branch" != "." ]; then
+
+        printf '%s\n' "$configured_branch"
+
+        return 0
+
+    fi
+
+
+    #
+    # If we're actually on a branch, use it.
+    #
+
+    branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+
+    if [ -n "$branch" ]; then
+
+        printf '%s\n' "$branch"
+
+        return 0
+
+    fi
+
+
+    #
+    # Detached HEAD is normal for submodules.
+    #
+    # Try to determine origin's default branch.
+    #
+
+    branch=$(git symbolic-ref \
+        --quiet \
+        --short refs/remotes/origin/HEAD \
+        2>/dev/null || true)
+
+    if [ -n "$branch" ]; then
+
+        branch="${branch#origin/}"
+
+        printf '%s\n' "$branch"
+
+        return 0
+
+    fi
+
+
+    #
+    # Last-resort fallback for the ca2 repositories.
+    #
+
+    printf '%s\n' "main"
+}
+
+
+process_repository()
+{
+    local directory="$1"
+    local allow_push="$2"
+    local configured_branch="${3:-}"
+
+    local git_root
+    local current_remote
+    local push_branch
+
+
+    if [ -z "$directory" ]; then
+
+        echo "ERROR: Empty repository path."
+
+        return 1
+
+    fi
+
+
+    if [ ! -d "$directory" ]; then
+
+        echo "Directory does not exist: $directory"
+
+        return 1
+
+    fi
+
+
+    pushd "$directory" || return 1
+
+
+    git_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+
+    if [ -z "$git_root" ]; then
+
+        echo "Not a Git repository: $directory"
+
+        popd
+
+        return 1
+
+    fi
+
+
+    cd "$git_root" || {
+
+        popd
+        return 1
+
+    }
+
+
+    echo
+    echo "============================================================"
+    echo "Processing:"
+    echo "   $git_root"
+    echo "============================================================"
+
+
+    #
+    # Process children before this repository.
+    #
+    # Let Git itself parse .gitmodules.
+    #
+
+    if [ -f .gitmodules ]; then
+
+        while read -r key submodule_path; do
+
+            #
+            # Guard against malformed or empty entries.
+            #
+
+            if [ -z "${key:-}" ] || [ -z "${submodule_path:-}" ]; then
+
+                echo "Ignoring invalid empty .gitmodules entry."
+
+                continue
+
+            fi
+
+
+            #
+            # key looks like:
+            #
+            #   submodule.foo.path
+            #
+
+            local submodule_name
+
+            submodule_name="${key#submodule.}"
+            submodule_name="${submodule_name%.path}"
+
+
+            local submodule_url
+
+            submodule_url=$(git config \
+                --file .gitmodules \
+                --get "submodule.${submodule_name}.url" \
+                2>/dev/null || true)
+
+
+            local submodule_branch
+
+            submodule_branch=$(git config \
+                --file .gitmodules \
+                --get "submodule.${submodule_name}.branch" \
+                2>/dev/null || true)
+
+
+            echo
+            echo "Submodule:"
+            echo "   Name: $submodule_name"
+            echo "   Path: $submodule_path"
+            echo "   URL : $submodule_url"
+
+
+            if [ ! -d "$submodule_path" ]; then
+
+                echo "Submodule is not checked out. Skipping:"
+                echo "   $submodule_path"
+
+                continue
+
+            fi
+
+
+            #
+            # Verify that the directory actually contains a checked-out
+            # Git repository.
+            #
+
+            if ! git -C "$submodule_path" \
+                    rev-parse --is-inside-work-tree \
+                    >/dev/null 2>&1; then
+
+                echo "Not an initialized Git submodule. Skipping:"
+                echo "   $submodule_path"
+
+                continue
+
+            fi
+
+
+            if is_owned_remote "$submodule_url"; then
+
+                echo "Owned ca2 submodule."
+
+                process_repository \
+                    "$submodule_path" \
+                    "yes" \
+                    "$submodule_branch"
+
+                child_result=$?
+
+                if [ "$child_result" -ne 0 ]; then
+
+                    echo "WARNING: Processing failed for:"
+                    echo "   $submodule_path"
+
+                fi
+
+            else
+
+                echo "External submodule."
+                echo "Not committing or pushing this repository."
+
+            fi
+
+
+            #
+            # Whether owned or external, stage the gitlink in the parent.
+            #
+            # This records a changed submodule commit if necessary.
+            #
+
+            echo "Staging submodule reference:"
+            echo "   $submodule_path"
+
+            git add -- "$submodule_path"
+
+        done < <(
+            git config \
+                --file .gitmodules \
+                --get-regexp '^submodule\..*\.path$' \
+                2>/dev/null || true
+        )
+
+    fi
+
+
+    #
+    # Stage normal files plus any updated submodule gitlinks.
+    #
+
+    echo
+    echo "Staging all changes in:"
+    echo "   $git_root"
+
+    git add -A -- .
+
+
+    #
+    # Only commit when there is something staged.
+    #
+
+    if git diff --cached --quiet; then
+
+        echo "No changes to commit."
+
+    else
+
+        if [ ! -f "$DEDICATORY_FILE" ]; then
+
+            echo "ERROR: Commit message file does not exist:"
+            echo "   $DEDICATORY_FILE"
+
+            popd
+
+            return 1
+
+        fi
+
+
+        echo "Committing changes."
+
+        if ! git commit -F "$DEDICATORY_FILE"; then
+
+            echo "ERROR: Commit failed in:"
+            echo "   $git_root"
+
+            popd
+
+            return 1
+
+        fi
+
+    fi
+
+
+    #
+    # External repositories are deliberately never pushed.
+    #
+
+    if [ "$allow_push" != "yes" ]; then
+
+        echo "Push disabled for this repository."
+
+        popd
+
+        return 0
+
+    fi
+
+
+    current_remote=$(git remote get-url origin 2>/dev/null || true)
+
+    if [ -z "$current_remote" ]; then
+
+        echo "No origin remote. Nothing to push."
+
+        popd
+
+        return 0
+
+    fi
+
+
+    push_branch=$(get_push_branch "$configured_branch")
+
+
+    echo
+    echo "Pushing:"
+    echo "   Repository : $git_root"
+    echo "   Remote     : $current_remote"
+    echo "   Destination: $push_branch"
+
+
+    #
+    # Explicit HEAD:<branch> also works when this repository is in
+    # detached HEAD state, which is normal for Git submodules.
+    #
+
+    if ! git push origin "HEAD:${push_branch}"; then
+
+        echo
+        echo "ERROR: Push failed."
+        echo
+        echo "Repository:"
+        echo "   $git_root"
+        echo
+        echo "Target branch:"
+        echo "   $push_branch"
+        echo
+        echo "The remote may contain commits that are not present locally."
+        echo "This script will NOT force-push or automatically merge/rebase."
+
+        popd
+
+        return 1
+
+    fi
+
+
+    popd
+
+    return 0
+}
+
+
+#
+# Determine starting repository.
+#
+# With an argument:
+#
+#   commit_and_push /path/to/repository
+#
+# Without one:
+#
+#   use the repository containing the current directory.
+#
+
+if [ $# -ge 1 ]; then
+
+    BASEDIR="$1"
+
+else
+
+    BASEDIR=$(git rev-parse --show-toplevel 2>/dev/null || true)
+
+fi
+
+
+if [ -z "${BASEDIR:-}" ]; then
+
+    echo "Current directory is not inside a Git repository."
+    echo
+    echo "Usage:"
+    echo
+    echo "   $0 [repository-directory]"
+
+    exit 1
+
+fi
+
+
+if [ ! -d "$BASEDIR" ]; then
+
+    echo "Directory does not exist:"
+    echo "   $BASEDIR"
+
+    exit 1
+
+fi
+
+
+pushd "$BASEDIR" || exit 1
+
+BASEDIR=$(git rev-parse --show-toplevel 2>/dev/null || true)
+
+popd
+
+
+if [ -z "$BASEDIR" ]; then
+
+    echo "Specified directory is not inside a Git repository."
+
+    exit 1
+
+fi
+
+
+#
+# The root repository was explicitly selected by the user, so allow
+# it to be pushed regardless of whether its URL matches ca2.
+#
+
+process_repository "$BASEDIR" "yes" ""
+

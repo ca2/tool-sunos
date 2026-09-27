@@ -1,0 +1,920 @@
+#!/usr/bin/env bash
+
+set -u
+
+
+#
+# ----------------------------------------------------------------------
+# Configuration
+# ----------------------------------------------------------------------
+#
+
+#
+# Git mergetool to use.
+#
+# Examples:
+#
+#   meld
+#   kdiff3
+#   vimdiff
+#
+MERGE_TOOL="${MERGE_TOOL:-meld}"
+
+PENDING_FILE="commit_pending_merges.txt"
+
+
+#
+# ----------------------------------------------------------------------
+# Utility functions
+# ----------------------------------------------------------------------
+#
+
+pushd()
+{
+    command pushd "$@" > /dev/null
+}
+
+
+popd()
+{
+    command popd "$@" > /dev/null
+}
+
+
+get_branch()
+{
+    local branch
+
+
+    #
+    # If currently on a branch, use it.
+    #
+
+    branch=$(git symbolic-ref \
+        --quiet \
+        --short HEAD \
+        2>/dev/null || true)
+
+    if [ -n "$branch" ]; then
+
+        printf '%s\n' "$branch"
+
+        return 0
+
+    fi
+
+
+    #
+    # Detached HEAD is normal for submodules.
+    #
+    # Try origin/HEAD.
+    #
+
+    branch=$(git symbolic-ref \
+        --quiet \
+        --short refs/remotes/origin/HEAD \
+        2>/dev/null || true)
+
+    if [ -n "$branch" ]; then
+
+        printf '%s\n' "${branch#origin/}"
+
+        return 0
+
+    fi
+
+
+    #
+    # Default for ca2 repositories.
+    #
+
+    printf '%s\n' "main"
+}
+
+
+has_conflicts()
+{
+    git diff \
+        --name-only \
+        --diff-filter=U |
+        grep -q .
+}
+
+
+get_conflict_count()
+{
+    git diff \
+        --name-only \
+        --diff-filter=U |
+        sed '/^[[:space:]]*$/d' |
+        wc -l |
+        tr -d '[:space:]'
+}
+
+
+get_first_conflict()
+{
+    git diff \
+        --name-only \
+        --diff-filter=U |
+        sed -n '1p'
+}
+
+
+is_file_still_conflicted()
+{
+    local filename="$1"
+
+    git diff \
+        --name-only \
+        --diff-filter=U \
+        -- "$filename" |
+        grep -q .
+}
+
+
+show_conflicts()
+{
+    local count
+
+    count=$(get_conflict_count)
+
+    echo
+    echo "Unresolved conflicts: $count"
+    echo
+
+    git diff \
+        --name-only \
+        --diff-filter=U |
+        sed 's/^/   /'
+
+    echo
+}
+
+
+wait_for_enter()
+{
+    local prompt="$1"
+
+    printf '%s' "$prompt"
+
+    IFS= read -r _
+}
+
+
+#
+# Remove a successfully merged repository from the pending file.
+#
+# The file is rewritten only after that repository has been completely
+# merged and its merge commit has been finished.
+#
+
+remove_from_pending_file()
+{
+    local relative_path="$1"
+    local temporary_file
+
+    temporary_file="${PENDING_PATH}.tmp.$$"
+
+
+    awk -v target="$relative_path" '
+
+        $0 != target {
+            print
+        }
+
+    ' "$PENDING_PATH" > "$temporary_file"
+
+
+    mv "$temporary_file" "$PENDING_PATH"
+}
+
+
+#
+# ----------------------------------------------------------------------
+# Conflict wizard
+# ----------------------------------------------------------------------
+#
+
+resolve_conflicts_wizard()
+{
+    local repository_relative_path="$1"
+
+    local conflict_file
+    local conflict_count
+    local answer
+
+
+    while has_conflicts; do
+
+        conflict_count=$(get_conflict_count)
+        conflict_file=$(get_first_conflict)
+
+
+        if [ -z "$conflict_file" ]; then
+
+            echo
+            echo "ERROR: Git reports conflicts, but no conflicted file"
+            echo "could be determined."
+
+            return 1
+
+        fi
+
+
+        echo
+        echo "============================================================"
+        echo "MERGE CONFLICT"
+        echo "============================================================"
+        echo
+        echo "Repository:"
+        echo "   $repository_relative_path"
+        echo
+        echo "Conflicts remaining:"
+        echo "   $conflict_count"
+        echo
+        echo "Next file:"
+        echo "   $conflict_file"
+        echo
+        echo "Actions:"
+        echo
+        echo "   Enter   Open this file in $MERGE_TOOL"
+        echo "   s       Show all remaining conflicts"
+        echo "   q       Stop the merge wizard"
+        echo
+
+
+        printf "> "
+
+        IFS= read -r answer
+
+
+        case "$answer" in
+
+            q|Q)
+
+                echo
+                echo "Merge wizard stopped by user."
+
+                return 1
+                ;;
+
+
+            s|S)
+
+                show_conflicts
+
+                continue
+                ;;
+
+
+            "")
+
+                ;;
+
+
+            *)
+
+                echo
+                echo "Unknown command."
+
+                continue
+                ;;
+
+        esac
+
+
+        echo
+        echo "Opening:"
+        echo "   $conflict_file"
+        echo
+        echo "Using:"
+        echo "   $MERGE_TOOL"
+        echo
+
+
+        #
+        # Explicitly give Git ONE conflicted file.
+        #
+        # This prevents git mergetool from walking all conflicts itself.
+        #
+
+        git mergetool \
+            --tool="$MERGE_TOOL" \
+            --no-prompt \
+            -- "$conflict_file"
+
+        mergetool_result=$?
+
+
+        echo
+
+
+        #
+        # Do not trust the mergetool return code alone.
+        #
+        # Ask Git whether THIS FILE remains unmerged.
+        #
+
+        if is_file_still_conflicted "$conflict_file"; then
+
+            echo "The file is still conflicted:"
+            echo
+            echo "   $conflict_file"
+            echo
+            echo "It will remain the next file in the wizard."
+            echo
+
+            if [ "$mergetool_result" -ne 0 ]; then
+
+                echo "The merge tool also returned an error."
+                echo
+
+            fi
+
+
+            echo "Actions:"
+            echo
+            echo "   Enter   Try this file again"
+            echo "   q       Stop the merge wizard"
+            echo
+
+
+            printf "> "
+
+            IFS= read -r answer
+
+
+            case "$answer" in
+
+                q|Q)
+
+                    echo
+                    echo "Merge wizard stopped by user."
+
+                    return 1
+                    ;;
+
+                *)
+
+                    ;;
+
+            esac
+
+
+            continue
+
+        fi
+
+
+        #
+        # The file is no longer unmerged.
+        #
+        # Ensure the resolved version is staged.
+        #
+
+        git add -- "$conflict_file"
+
+
+        echo "Resolved:"
+        echo "   $conflict_file"
+
+
+        conflict_count=$(get_conflict_count)
+
+        echo
+        echo "Conflicts remaining:"
+        echo "   $conflict_count"
+
+    done
+
+
+    echo
+    echo "All conflicts in this repository have been resolved."
+
+    return 0
+}
+
+
+#
+# ----------------------------------------------------------------------
+# Merge one repository
+# ----------------------------------------------------------------------
+#
+
+merge_repository()
+{
+    local repository="$1"
+    local relative_path="$2"
+
+    local branch
+
+
+    echo
+    echo "################################################################"
+    echo "Repository:"
+    echo "   $relative_path"
+    echo
+    echo "Path:"
+    echo "   $repository"
+    echo "################################################################"
+    echo
+
+
+    pushd "$repository" || return 1
+
+
+    if ! git rev-parse \
+        --is-inside-work-tree \
+        >/dev/null 2>&1; then
+
+        echo "ERROR: Not a Git repository:"
+        echo
+        echo "   $repository"
+
+        popd
+
+        return 1
+
+    fi
+
+
+    branch=$(get_branch)
+
+
+    echo "Target remote branch:"
+    echo "   origin/$branch"
+    echo
+
+
+    #
+    # Refuse to start if this repository already contains an unfinished
+    # merge from something else.
+    #
+
+    if [ -f "$(git rev-parse --git-path MERGE_HEAD)" ]; then
+
+        echo "An unfinished merge already exists in this repository."
+
+
+        if has_conflicts; then
+
+            echo
+            echo "Continuing its existing conflicts through the wizard."
+
+
+            if ! resolve_conflicts_wizard "$relative_path"; then
+
+                popd
+
+                return 1
+
+            fi
+
+
+            echo
+            echo "Completing existing merge commit."
+
+
+            if ! git commit --no-edit; then
+
+                echo
+                echo "ERROR: Could not complete the existing merge."
+
+                popd
+
+                return 1
+
+            fi
+
+        else
+
+            echo
+            echo "No unresolved files remain."
+            echo "Completing the existing merge commit."
+
+
+            if ! git commit --no-edit; then
+
+                echo
+                echo "ERROR: Could not complete the existing merge."
+
+                popd
+
+                return 1
+
+            fi
+
+        fi
+
+
+        popd
+
+        return 0
+
+    fi
+
+
+    #
+    # Fetch current remote state.
+    #
+
+    echo "Fetching origin..."
+
+
+    if ! git fetch origin; then
+
+        echo
+        echo "ERROR: Could not fetch origin."
+
+        popd
+
+        return 1
+
+    fi
+
+
+    #
+    # Verify the remote branch exists.
+    #
+
+    if ! git show-ref \
+        --verify \
+        --quiet \
+        "refs/remotes/origin/$branch"; then
+
+        echo
+        echo "ERROR: Remote branch does not exist:"
+        echo
+        echo "   origin/$branch"
+
+        popd
+
+        return 1
+
+    fi
+
+
+    #
+    # If remote history is already contained in HEAD there is no merge
+    # required anymore.
+    #
+
+    if git merge-base \
+        --is-ancestor \
+        "origin/$branch" \
+        HEAD; then
+
+        echo
+        echo "No merge is currently required."
+        echo "HEAD already contains origin/$branch."
+
+        popd
+
+        return 0
+
+    fi
+
+
+    echo
+    echo "Merging:"
+    echo
+    echo "   origin/$branch"
+    echo
+    echo "into current HEAD..."
+    echo
+
+
+    #
+    # First let Git perform every merge it can automatically.
+    #
+
+    git merge \
+        --no-edit \
+        "origin/$branch"
+
+    merge_result=$?
+
+
+    #
+    # Complete clean merge.
+    #
+
+    if [ "$merge_result" -eq 0 ]; then
+
+        echo
+        echo "Merge completed automatically with no conflicts."
+
+        popd
+
+        return 0
+
+    fi
+
+
+    #
+    # A non-zero merge result isn't necessarily a conflict.
+    #
+
+    if ! has_conflicts; then
+
+        echo
+        echo "ERROR: git merge failed, but Git reports no file conflicts."
+        echo
+        echo "Inspect this repository manually:"
+        echo
+        echo "   $repository"
+
+        popd
+
+        return 1
+
+    fi
+
+
+    show_conflicts
+
+
+    echo "Git automatically merged everything it could."
+    echo "Only unresolved files will now be presented by the wizard."
+
+
+    if ! resolve_conflicts_wizard "$relative_path"; then
+
+        popd
+
+        return 1
+
+    fi
+
+
+    #
+    # Git should now report no unmerged entries.
+    #
+
+    if has_conflicts; then
+
+        echo
+        echo "ERROR: unresolved conflicts remain."
+
+        popd
+
+        return 1
+
+    fi
+
+
+    #
+    # Stage all resolution changes in case the merge tool changed related
+    # files as part of resolving a conflict.
+    #
+
+    git add -A
+
+
+    echo
+    echo "Completing merge commit..."
+
+
+    if ! git commit --no-edit; then
+
+        echo
+        echo "ERROR: Could not complete the merge commit."
+
+        popd
+
+        return 1
+
+    fi
+
+
+    echo
+    echo "Merge completed successfully."
+
+
+    popd
+
+    return 0
+}
+
+
+#
+# ----------------------------------------------------------------------
+# Main
+# ----------------------------------------------------------------------
+#
+
+ROOT=$(git rev-parse \
+    --show-toplevel \
+    2>/dev/null || true)
+
+
+if [ -z "$ROOT" ]; then
+
+    echo "Current directory is not inside a Git repository."
+
+    exit 1
+
+fi
+
+
+PENDING_PATH="$ROOT/$PENDING_FILE"
+
+
+if [ ! -f "$PENDING_PATH" ]; then
+
+    echo "No pending merge file exists:"
+    echo
+    echo "   $PENDING_PATH"
+
+    exit 0
+
+fi
+
+
+if [ ! -s "$PENDING_PATH" ]; then
+
+    echo "Pending merge file is empty:"
+    echo
+    echo "   $PENDING_PATH"
+
+    exit 0
+
+fi
+
+
+#
+# Validate the configured merge tool.
+#
+
+if ! command -v "$MERGE_TOOL" >/dev/null 2>&1; then
+
+    echo "Configured merge tool was not found:"
+    echo
+    echo "   $MERGE_TOOL"
+    echo
+    echo "You can override it, for example:"
+    echo
+    echo "   MERGE_TOOL=vimdiff $0"
+    echo
+    echo "or:"
+    echo
+    echo "   MERGE_TOOL=kdiff3 $0"
+
+    exit 1
+
+fi
+
+
+echo
+echo "============================================================"
+echo "ca2 Guided Merge Wizard"
+echo "============================================================"
+echo
+echo "Merge tool:"
+echo "   $MERGE_TOOL"
+echo
+echo "Pending merge file:"
+echo "   $PENDING_PATH"
+echo
+echo "Repositories currently listed:"
+echo
+
+sed 's/^/   /' "$PENDING_PATH"
+
+echo
+
+
+#
+# Sort deepest paths first.
+#
+# Example:
+#
+#   source/app/bred
+#   source/app
+#   source
+#
+# This guarantees child repositories are merged before their parents.
+#
+
+SORTED_PATHS=$(
+    awk '
+
+        NF {
+
+            path = $0
+
+            copy = path
+
+            depth = gsub(/\//, "/", copy)
+
+            print depth "\t" path
+
+        }
+
+    ' "$PENDING_PATH" |
+    sort -rn -k1,1 |
+    cut -f2-
+)
+
+
+failed=0
+
+
+while IFS= read -r relative_path; do
+
+    if [ -z "$relative_path" ]; then
+        continue
+    fi
+
+
+    repository="$ROOT/$relative_path"
+
+
+    echo
+    echo "Next repository:"
+    echo
+    echo "   $relative_path"
+    echo
+
+
+    if [ ! -d "$repository" ]; then
+
+        echo "ERROR: Repository directory does not exist:"
+        echo
+        echo "   $repository"
+
+        failed=1
+
+        break
+
+    fi
+
+
+    if ! merge_repository \
+        "$repository" \
+        "$relative_path"; then
+
+        echo
+        echo "============================================================"
+        echo "Merge wizard stopped."
+        echo
+        echo "Repository:"
+        echo "   $relative_path"
+        echo
+        echo "The remaining pending repositories are still recorded in:"
+        echo
+        echo "   $PENDING_PATH"
+        echo "============================================================"
+
+        failed=1
+
+        break
+
+    fi
+
+
+    #
+    # This repository was successfully handled.
+    #
+    # Remove it from the pending file immediately. This makes the script
+    # restartable: if a later repository fails, successfully completed
+    # repositories won't be presented again next time.
+    #
+
+    remove_from_pending_file "$relative_path"
+
+
+    echo
+    echo "Completed:"
+    echo "   $relative_path"
+
+
+done <<< "$SORTED_PATHS"
+
+
+if [ "$failed" -ne 0 ]; then
+
+    exit 1
+
+fi
+
+
+#
+# If everything succeeded, the pending file should now be empty.
+#
+
+if [ ! -s "$PENDING_PATH" ]; then
+
+    rm -f "$PENDING_PATH"
+
+fi
+
+
+echo
+echo "============================================================"
+echo "All pending merges were completed."
+echo "============================================================"
+echo
+echo "You can now run the commit script again."
+echo

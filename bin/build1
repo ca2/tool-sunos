@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+
+logicalCpuCount=$(psrinfo | wc -l)
+
+build_parallelization=$((logicalCpuCount - 1))
+
+if [ "$build_parallelization" -lt 1 ]; then
+    build_parallelization=1
+fi
+
+echo "Build Parallelization $build_parallelization"
+
+echo "ninja -j $build_parallelization $@"
+
+exec ninja -j "$build_parallelization" "$@"

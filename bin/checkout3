@@ -1,0 +1,136 @@
+#!/usr/bin/bash
+ 
+if [ -z "$1" ]; then
+ 
+        if [ -d .git ]; then
+ 
+                BASEDIR=$(pwd)
+
+#		echo "BASEDIR=$BASEDIR"
+ 
+                DIR=$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]\\/]*$//'<<<"${DIR}")
+
+#		echo "DIR=$DIR"
+               
+        else
+ 
+                if [ -f $HOME/current_working_directory.txt ]; then
+ 
+                        BASEDIR=`cat $HOME/current_working_directory.txt`
+ 
+                        BASEDIR=$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]\\/]*$//'<<<"${BASEDIR}")
+ 
+                        BASEDIR=$(sed -e 's/^\([A-Z]\)[:]/\/\1/'<<<"${BASEDIR}")
+ 
+                        BASEDIR=$(sed -e 's/\\/\//'<<<"${BASEDIR}")
+ 
+                fi
+ 
+                if [ -z "$BASEDIR" ]; then
+ 
+                        echo "Please run command:"
+                        echo ""
+                        echo "   set_working_directory <WORKING_DIRECTORY_PATH>"
+                        echo ""
+                        echo "to set the base folder path."
+                        echo ""
+                        echo "You can also run this command from a git repository folder."
+ 
+                        exit 0
+ 
+                fi
+ 
+        fi
+ 
+else
+ 
+        BASEDIR=$1
+ 
+fi
+ 
+path_pattern="path = *"
+ 
+pushd () {
+    command pushd "$@" > /dev/null
+}
+ 
+popd () {
+    command popd "$@" > /dev/null
+}
+ 
+ 
+submodule()
+{
+ 
+        if [ -d "$1" ]; then
+ 
+                pushd $1
+ 
+                DIR=$(pwd)
+ 
+                DIR=$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]\\/]*$//'<<<"${DIR}")
+ 
+                echo "Processing $DIR..."
+ 
+                git fetch
+
+				
+                LIST_MAIN_BRANCH=$(git branch --list main)
+
+                if [ -n "$LIST_MAIN_BRANCH" ]; then
+
+                    git checkout main
+
+                else
+
+                    git checkout master
+
+                fi
+
+                git pull
+ 
+                if [ -n "$LIST_MAIN_BRANCH" ]; then
+
+#			echo "-n LIST_MAIN_BRANCH ($LIST_MAIN_BRANCH)"
+
+                        if [ -f .gitmodules ]; then
+
+#				echo "-f .gitmodules"
+        
+                                while read line; do
+        
+                                        trimmed_line=$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]\\/]*$//'<<<"${line}")
+
+#					echo "trimmed_line=$trimmed_line"
+        
+                                        if [[ $trimmed_line == $path_pattern ]]; then
+
+#						echo "matched pattern for line $trimmed_line"
+        
+                                                submodule_name=$(sed -e 's/^path[[:space:]]*=[[:space:]]*//'<<<"${trimmed_line}")
+						
+#						echo "submodule_name ${submodule_name}"
+        
+                                                submodule ./$submodule_name
+        
+                                        fi
+        
+                                done < ./.gitmodules
+        
+                        fi
+
+                fi
+ 
+                popd
+ 
+        fi
+ 
+}
+
+ 
+submodule $BASEDIR
+ 
+ 
+ 
+ 
+ 

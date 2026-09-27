@@ -1,0 +1,245 @@
+#!/usr/bin/env bash
+
+set -u
+
+
+pushd()
+{
+    command pushd "$@" > /dev/null
+}
+
+
+popd()
+{
+    command popd "$@" > /dev/null
+}
+
+
+submodule()
+{
+    local directory="$1"
+
+    if [ ! -d "$directory" ]; then
+        echo "Directory does not exist: $directory"
+        return 1
+    fi
+
+    pushd "$directory" || return 1
+
+
+    local git_root
+
+    git_root=$(git rev-parse --show-toplevel 2>/dev/null)
+
+    if [ -z "$git_root" ]; then
+
+        echo "Not a Git repository: $directory"
+
+        popd
+
+        return 1
+
+    fi
+
+
+    #
+    # Ensure we're working from the repository root.
+    #
+
+    cd "$git_root" || {
+
+        popd
+
+        return 1
+
+    }
+
+
+    echo ""
+    echo "Processing $git_root..."
+
+
+    #
+    # Process submodules first.
+    #
+    # Git parses .gitmodules for us instead of manually parsing it.
+    #
+
+    if [ -f .gitmodules ]; then
+
+        while IFS=' ' read -r key submodule_name; do
+
+            if [ -z "$submodule_name" ]; then
+                continue
+            fi
+
+
+            echo ""
+            echo "Processing submodule $submodule_name."
+
+
+            if [ -d "$submodule_name" ]; then
+
+                submodule "$submodule_name"
+
+
+                #
+                # After committing the child repository, stage its
+                # updated commit reference in the parent repository.
+                #
+
+                echo "Adding submodule $submodule_name."
+
+                git add -- "$submodule_name"
+
+            else
+
+                echo "Submodule directory does not exist: $submodule_name"
+
+            fi
+
+
+        done < <(
+            git config \
+                --file .gitmodules \
+                --get-regexp '\.path$' \
+                2>/dev/null
+        )
+
+    fi
+
+
+    #
+    # Stage everything in the current repository.
+    #
+
+    echo ""
+    echo "Adding all files."
+
+    git add -A
+
+
+    #
+    # Commit only when there is actually something staged.
+    #
+
+    if git diff --cached --quiet; then
+
+        echo "No changes to commit in $git_root."
+
+    else
+
+        echo "Committing changes in $git_root."
+
+        git commit -F "$HOME/dedicatory.txt"
+
+        if [ $? -ne 0 ]; then
+
+            echo "Commit failed in $git_root."
+
+            popd
+
+            return 1
+
+        fi
+
+    fi
+
+
+    #
+    # Push even when there was no new commit.
+    #
+    # This allows already-existing local commits to be pushed.
+    #
+
+    echo "Pushing $git_root."
+
+    git push
+
+    if [ $? -ne 0 ]; then
+
+        echo "Push failed in $git_root."
+
+        popd
+
+        return 1
+
+    fi
+
+
+    popd
+
+    return 0
+}
+
+
+#
+# Determine the repository to process.
+#
+# Usage:
+#
+#    script.sh
+#
+# Uses the Git repository containing the current directory.
+#
+# Or:
+#
+#    script.sh /path/to/repository
+#
+
+if [ $# -ge 1 ]; then
+
+    BASEDIR="$1"
+
+else
+
+    BASEDIR=$(git rev-parse --show-toplevel 2>/dev/null)
+
+    if [ -z "$BASEDIR" ]; then
+
+        echo "Current directory is not inside a Git repository."
+        echo ""
+        echo "Usage:"
+        echo ""
+        echo "   $0 [repository-directory]"
+        echo ""
+
+        exit 1
+
+    fi
+
+fi
+
+
+#
+# Normalize an explicitly supplied directory by asking Git for its
+# repository root.
+#
+
+if [ ! -d "$BASEDIR" ]; then
+
+    echo "Directory does not exist: $BASEDIR"
+
+    exit 1
+
+fi
+
+
+pushd "$BASEDIR" || exit 1
+
+BASEDIR=$(git rev-parse --show-toplevel 2>/dev/null)
+
+popd
+
+
+if [ -z "$BASEDIR" ]; then
+
+    echo "The specified directory is not inside a Git repository."
+
+    exit 1
+
+fi
+
+
+submodule "$BASEDIR"
+
