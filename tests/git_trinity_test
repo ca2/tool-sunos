@@ -194,6 +194,10 @@ git -C "$WORK/owned-parent" \
 git -C "$WORK/owned-parent" config \
     --file .gitmodules \
     submodule.child.url \
+    ../owned-child
+
+git -C "$WORK/owned-parent" config \
+    submodule.child.url \
     git@github.com:ca2/owned-child
 
 git -C "$WORK/owned-parent" add .gitmodules child

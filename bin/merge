@@ -115,6 +115,44 @@ is_owned_remote()
 }
 
 
+get_submodule_remote_url()
+{
+    local submodule_name="$1"
+    local submodule_path="$2"
+    local url
+
+
+    url=$(git config \
+        --get "submodule.${submodule_name}.url" \
+        2>/dev/null || true)
+
+
+    if [ -z "$url" ] &&
+       git -C "$submodule_path" rev-parse \
+        --is-inside-work-tree \
+        >/dev/null 2>&1; then
+
+        url=$(git -C "$submodule_path" remote get-url \
+            origin \
+            2>/dev/null || true)
+
+    fi
+
+
+    if [ -z "$url" ]; then
+
+        url=$(git config \
+            --file .gitmodules \
+            --get "submodule.${submodule_name}.url" \
+            2>/dev/null || true)
+
+    fi
+
+
+    printf '%s\n' "$url"
+}
+
+
 commit_is_available_from_origin()
 {
     local directory="$1"
@@ -192,10 +230,9 @@ verify_external_submodules()
         submodule_name="${key#submodule.}"
         submodule_name="${submodule_name%.path}"
 
-        submodule_url=$(git config \
-            --file .gitmodules \
-            --get "submodule.${submodule_name}.url" \
-            2>/dev/null || true)
+        submodule_url=$(get_submodule_remote_url \
+            "$submodule_name" \
+            "$submodule_path")
 
 
         if is_owned_remote "$submodule_url"; then

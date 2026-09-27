@@ -33,6 +33,50 @@ is_owned_remote()
 }
 
 
+get_submodule_remote_url()
+{
+    local submodule_name="$1"
+    local submodule_path="$2"
+    local url
+
+
+    #
+    # `git submodule init/sync` resolves relative .gitmodules URLs
+    # against the parent's origin and stores the usable SSH URL here.
+    # Prefer that resolved value for ownership decisions.
+    #
+
+    url=$(git config \
+        --get "submodule.${submodule_name}.url" \
+        2>/dev/null || true)
+
+
+    if [ -z "$url" ] &&
+       git -C "$submodule_path" rev-parse \
+        --is-inside-work-tree \
+        >/dev/null 2>&1; then
+
+        url=$(git -C "$submodule_path" remote get-url \
+            origin \
+            2>/dev/null || true)
+
+    fi
+
+
+    if [ -z "$url" ]; then
+
+        url=$(git config \
+            --file .gitmodules \
+            --get "submodule.${submodule_name}.url" \
+            2>/dev/null || true)
+
+    fi
+
+
+    printf '%s\n' "$url"
+}
+
+
 get_branch()
 {
     local configured_branch="${1:-}"
@@ -304,10 +348,9 @@ commit_repository()
             submodule_name="${submodule_name%.path}"
 
 
-            submodule_url=$(git config \
-                --file .gitmodules \
-                --get "submodule.${submodule_name}.url" \
-                2>/dev/null || true)
+            submodule_url=$(get_submodule_remote_url \
+                "$submodule_name" \
+                "$submodule_path")
 
 
             if [ ! -d "$submodule_path" ]; then
@@ -653,10 +696,9 @@ preflight_repository()
             submodule_name="${submodule_name%.path}"
 
 
-            submodule_url=$(git config \
-                --file .gitmodules \
-                --get "submodule.${submodule_name}.url" \
-                2>/dev/null || true)
+            submodule_url=$(get_submodule_remote_url \
+                "$submodule_name" \
+                "$submodule_path")
 
 
             submodule_branch=$(git config \
@@ -793,10 +835,9 @@ push_repository()
             submodule_name="${submodule_name%.path}"
 
 
-            submodule_url=$(git config \
-                --file .gitmodules \
-                --get "submodule.${submodule_name}.url" \
-                2>/dev/null || true)
+            submodule_url=$(get_submodule_remote_url \
+                "$submodule_name" \
+                "$submodule_path")
 
 
             submodule_branch=$(git config \
