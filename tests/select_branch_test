@@ -130,7 +130,47 @@ test "$(git --git-dir="$WORK/parent.git" config \
     --get submodule.child.branch)" = "feature"
 
 
+#
+# A dirty owned parent must not prevent safe child convergence. Also,
+# an external tracking branch with local-only commits must be preserved
+# as a ref while its worktree moves to the published remote commit.
+#
+
+git -C "$WORK/parent/child" \
+    commit \
+    --quiet \
+    --allow-empty \
+    -m local-only
+
+LOCAL_ONLY_FEATURE=$(git -C "$WORK/parent/child" rev-parse HEAD)
+PUBLISHED_FEATURE=$(git -C "$WORK/repository" rev-parse feature)
+
+printf '%s\n' 'preserve me' > "$WORK/parent/local-untracked.txt"
+
+
+(
+    cd "$WORK/parent"
+
+    GIT_ALLOW_PROTOCOL=file \
+        "$SCRIPT_ROOT/bin/checkout"
+) > "$WORK/dirty-parent-checkout.log" 2>&1
+
+
+test -f "$WORK/parent/local-untracked.txt"
+
+test "$(git -C "$WORK/parent/child" rev-parse HEAD)" = \
+    "$PUBLISHED_FEATURE"
+
+test "$(git -C "$WORK/parent/child" \
+    rev-parse refs/heads/feature)" = "$LOCAL_ONLY_FEATURE"
+
+test -z "$(git -C "$WORK/parent/child" branch --show-current)"
+
+rm -f "$WORK/parent/local-untracked.txt"
+
+
 echo "PASS: empty input relisted branches"
 echo "PASS: q exited without changing branches"
 echo "PASS: a valid numbered selection switched branches"
 echo "PASS: a submodule selection was recorded and committed by its parent"
+echo "PASS: dirty parents were preserved while external children converged"

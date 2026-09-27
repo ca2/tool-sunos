@@ -180,6 +180,34 @@ index_has_only_gitlink_changes()
 }
 
 
+gitmodules_has_only_branch_changes()
+{
+    git diff \
+        --no-ext-diff \
+        --unified=0 \
+        -- .gitmodules |
+        awk '
+
+            /^(diff --git |index |--- |\+\+\+ |@@ )/ {
+                next
+            }
+
+            /^[+-][[:space:]]*branch[[:space:]]*=/ {
+                next
+            }
+
+            /^[+-]/ {
+                invalid = 1
+            }
+
+            END {
+                exit invalid
+            }
+
+        '
+}
+
+
 worktree_has_only_submodule_branch_changes()
 {
     local path
@@ -207,29 +235,40 @@ worktree_has_only_submodule_branch_changes()
     fi
 
 
-    git diff \
-        --no-ext-diff \
-        --unified=0 \
-        -- .gitmodules |
-        awk '
+    gitmodules_has_only_branch_changes
+}
 
-            /^(diff --git |index |--- |\+\+\+ |@@ )/ {
-                next
-            }
 
-            /^[+-][[:space:]]*branch[[:space:]]*=/ {
-                next
-            }
+submodule_configuration_is_safe_for_recursion()
+{
+    if [ ! -f .gitmodules ]; then
+        return 0
+    fi
 
-            /^[+-]/ {
-                invalid = 1
-            }
 
-            END {
-                exit invalid
-            }
+    if ! git ls-files \
+        --error-unmatch \
+        .gitmodules \
+        >/dev/null 2>&1; then
 
-        '
+        return 1
+
+    fi
+
+
+    #
+    # Never recurse using staged submodule configuration that has not
+    # been committed. An unstaged branch-only edit made by select_branch
+    # is the sole exception for the worktree copy.
+    #
+
+    if ! git diff --cached --quiet -- .gitmodules; then
+        return 1
+    fi
+
+
+    git diff --quiet -- .gitmodules ||
+        gitmodules_has_only_branch_changes
 }
 
 
@@ -241,7 +280,8 @@ repository_is_clean()
     # unstaged submodule differences here. A branch-only .gitmodules
     # edit made by select_branch is also safe and must survive until
     # commit records it. Other source edits, staged non-gitlink changes,
-    # and untracked files still block checkout.
+    # and untracked files make this repository ineligible for updating;
+    # the caller may still recurse into its safely configured children.
     #
 
     {
@@ -468,14 +508,31 @@ update_owned_repository()
 
     if ! repository_is_clean; then
 
+        if ! submodule_configuration_is_safe_for_recursion; then
+
+            echo
+            print_error "ERROR: Repository has unsafe .gitmodules changes:"
+            echo "   $display_name"
+            echo
+
+            git status --short
+
+            return 1
+
+        fi
+
+
         echo
-        print_error "ERROR: Repository has local changes:"
+        echo "Repository has local changes; leaving it untouched:"
         echo "   $display_name"
         echo
 
         git status --short
 
-        return 1
+        echo
+        echo "Continuing with its submodules so safe child updates can converge."
+
+        return 0
 
     fi
 
@@ -715,21 +772,31 @@ update_third_party_repository()
         elif [ "$REMOTE" = "$BASE" ]; then
 
             echo
-            print_error "ERROR: Third-party repository contains local commits:"
+            echo "Third-party branch contains local commits not on origin:"
             echo "   $display_name"
             echo
-            echo "It is read-only, so checkout will not discard them automatically."
+            echo "Preserving refs/heads/$branch at:"
+            echo "   $LOCAL"
+            echo "Checking out origin/$branch detached for the reproducible tree."
 
-            return 1
+            git checkout \
+                --detach \
+                "origin/$branch" || return 1
 
 
         else
 
             echo
-            print_error "ERROR: Third-party branch has diverged from origin/$branch:"
+            echo "Third-party branch has diverged from origin/$branch:"
             echo "   $display_name"
+            echo
+            echo "Preserving refs/heads/$branch at:"
+            echo "   $LOCAL"
+            echo "Checking out origin/$branch detached for the reproducible tree."
 
-            return 1
+            git checkout \
+                --detach \
+                "origin/$branch" || return 1
 
         fi
 
@@ -1090,5 +1157,5 @@ fi
 
 echo
 print_success "========================================================"
-print_success "=== Repository tree successfully updated! ==="
+print_success "=== Repository tree checkout processing completed! ==="
 print_success "========================================================"
