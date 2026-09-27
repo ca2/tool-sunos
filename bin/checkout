@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+
+set -e
+
+echo "=== Starting Recursive Git Submodule Update ==="
+
+git submodule sync --recursive
+git submodule update --init --recursive
+
+
+git submodule foreach --recursive '
+
+    SUBMODULE_URL=$(git config --get remote.origin.url || echo "")
+
+    echo "--------------------------------------------------------"
+    echo "Entering submodule: $displaypath"
+    echo "Remote URL: $SUBMODULE_URL"
+    echo "Parent-selected commit: $sha1"
+
+
+    #
+    # ca2 and cpp-port are writable/tracking repositories.
+    #
+
+    if [[ "$SUBMODULE_URL" =~ github\.com[:/]ca2/ ]] ||
+       [[ "$SUBMODULE_URL" =~ github\.com[:/]cpp-port/ ]]; then
+
+        echo ">> ca2 / cpp-port repository."
+
+        git fetch origin
+
+
+        #
+        # Determine branch.
+        #
+
+        CURRENT_BRANCH=$(git symbolic-ref --quiet --short HEAD || true)
+
+        if [ -z "$CURRENT_BRANCH" ]; then
+
+            if git show-ref --verify --quiet refs/remotes/origin/main; then
+
+                CURRENT_BRANCH="main"
+
+            elif git show-ref --verify --quiet refs/remotes/origin/master; then
+
+                CURRENT_BRANCH="master"
+
+            else
+
+                echo "ERROR: Could not determine branch for:"
+                echo "   $displaypath"
+
+                exit 1
+
+            fi
+
+        fi
+
+
+        echo ">> Target branch: $CURRENT_BRANCH"
+
+
+        #
+        # Do NOT checkout/pull over local modifications.
+        #
+
+        if ! git diff --quiet ||
+           ! git diff --cached --quiet; then
+
+            echo
+            echo "ERROR: Repository has uncommitted changes:"
+            echo "   $displaypath"
+            echo
+            echo "Changes:"
+            git status --short
+            echo
+            echo "Commit/stash/merge these changes before running checkout."
+
+            exit 1
+
+        fi
+
+
+        #
+        # Switch from detached HEAD to our tracking branch if necessary.
+        #
+
+        git checkout "$CURRENT_BRANCH"
+
+
+        #
+        # Check relationship with origin.
+        #
+
+        LOCAL=$(git rev-parse HEAD)
+        REMOTE=$(git rev-parse "origin/$CURRENT_BRANCH")
+        BASE=$(git merge-base HEAD "origin/$CURRENT_BRANCH")
+
+
+        if [ "$LOCAL" = "$REMOTE" ]; then
+
+            echo ">> Already up to date."
+
+
+        elif [ "$LOCAL" = "$BASE" ]; then
+
+            #
+            # Pure fast-forward. Safe to update automatically.
+            #
+
+            echo ">> Fast-forwarding to origin/$CURRENT_BRANCH."
+
+            git merge --ff-only "origin/$CURRENT_BRANCH"
+
+
+        elif [ "$REMOTE" = "$BASE" ]; then
+
+            #
+            # Local commits only.
+            #
+
+            echo ">> Local branch is ahead of origin/$CURRENT_BRANCH."
+            echo ">> Leaving local commits untouched."
+
+
+        else
+
+            #
+            # Both sides contain commits.
+            #
+            # Do not silently merge/rebase here.
+            #
+
+            echo
+            echo "ERROR: Local and remote branches have diverged:"
+            echo "   $displaypath"
+            echo
+            echo "Local:"
+            echo "   $LOCAL"
+            echo
+            echo "Remote:"
+            echo "   $REMOTE"
+            echo
+            echo "This repository must be merged/rebased explicitly."
+
+            exit 1
+
+        fi
+
+
+    else
+
+        #
+        # True third-party dependency.
+        #
+        # $sha1 is the exact commit recorded by the immediate parent.
+        #
+
+        echo ">> Third-party submodule."
+        echo ">> Restoring parent-selected commit:"
+        echo "   $sha1"
+
+        git checkout --force "$sha1"
+
+    fi
+'
+
+
+echo "========================================================"
+echo "=== Submodule codebase successfully processed! ==="
+echo "========================================================"
