@@ -1,0 +1,102 @@
+=== Starting Recursive Git Repository Update ===
+
+Root repository:
+   /export/home/camilo/code/console_build_tools
+
+--------------------------------------------------------
+Updating ca2/cpp-port repository:
+   .
+Fetching origin...
+Target branch:
+   main
+Already on 'main'
+M	operating_system
+M	port
+M	source
+Your branch is up to date with 'origin/main'.
+Already up to date.
+Synchronizing submodule url for 'operating_system'
+Synchronizing submodule url for 'port'
+Synchronizing submodule url for 'source'
+
+========================================================
+Submodule:
+   operating_system
+URL:
+   git@github.com:ca2/sunos-operating_system
+Parent-selected branch:
+   main
+
+--------------------------------------------------------
+Updating ca2/cpp-port repository:
+   operating_system
+Fetching origin...
+Target branch:
+   main
+Already on 'main'
+Your branch is ahead of 'origin/main' by 1 commit.
+  (use "git push" to publish your local commits)
+Local branch is ahead of origin/main.
+Leaving local commits untouched.
+Synchronizing submodule url for 'operating_system-posix'
+Synchronizing submodule url for 'operating_system-sunos'
+
+========================================================
+Submodule:
+   operating_system/operating_system-posix
+URL:
+   git@github.com:ca2/operating_system-posix
+Parent-selected branch:
+   main
+
+--------------------------------------------------------
+Updating ca2/cpp-port repository:
+   operating_system/operating_system-posix
+Fetching origin...
+Target branch:
+   main
+Already on 'main'
+Your branch is up to date with 'origin/main'.
+Already up to date.
+
+========================================================
+Submodule:
+   operating_system/operating_system-sunos
+URL:
+   git@github.com:ca2/operating_system-sunos
+Parent-selected branch:
+   main
+
+--------------------------------------------------------
+Updating ca2/cpp-port repository:
+   operating_system/operating_system-sunos
+Fetching origin...
+Target branch:
+   main
+Already on 'main'
+Your branch is ahead of 'origin/main' by 1 commit.
+  (use "git push" to publish your local commits)
+Local branch is ahead of origin/main.
+Leaving local commits untouched.
+
+========================================================
+Submodule:
+   port
+URL:
+   git@github.com:ca2/sunos-port
+Parent-selected branch:
+   main
+
+--------------------------------------------------------
+Updating ca2/cpp-port repository:
+   port
+
+ERROR: Repository has local changes:
+   port
+
+ M common
+?? include/
+
+========================================================
+=== Checkout/update stopped because of an error. ===
+========================================================
