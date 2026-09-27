@@ -1,4 +1,3 @@
-```bash
 #!/usr/bin/env bash
 
 set -u
@@ -893,4 +892,3 @@ echo "============================================================"
 echo
 echo "Run commit again to record any final parent gitlink changes"
 echo "and push the complete repository hierarchy."
-```
