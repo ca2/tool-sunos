@@ -1,0 +1,54 @@
+=== Starting Recursive Git Repository Update ===
+
+Root repository:
+   /export/home/camilo/code/console_build_tools
+
+--------------------------------------------------------
+Updating ca2/cpp-port repository:
+   .
+Fetching origin...
+Target branch:
+   main
+Already on 'main'
+M	operating_system
+M	port
+M	source
+Your branch is up to date with 'origin/main'.
+Already up to date.
+Synchronizing submodule url for 'operating_system'
+Synchronizing submodule url for 'port'
+Synchronizing submodule url for 'source'
+
+========================================================
+Submodule:
+   operating_system
+URL:
+   ../sunos-operating_system
+Parent-selected branch:
+   main
+
+--------------------------------------------------------
+Updating third-party repository:
+   operating_system
+
+ERROR: Third-party repository tree is not clean:
+   operating_system
+
+Nothing was changed.
+
+Dirty files/submodules:
+
+Current repository:
+ M CMakeLists.txt
+ m operating_system-sunos
+Entering 'operating_system-posix'
+Entering 'operating_system-sunos'
+
+Submodule: operating_system-sunos
+ M operating_system/system.h
+ M operating_system/types.h
+?? operating_system/__/
+
+========================================================
+=== Checkout/update stopped because of an error. ===
+========================================================

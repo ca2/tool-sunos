@@ -1,0 +1,55 @@
+
+============================================================
+PHASE 1: Committing local changes recursively
+============================================================
+
+============================================================
+Committing repository:
+   /export/home/camilo/code/console_build_tools
+============================================================
+
+External submodule:
+   operating_system
+Not committing inside it.
+Verifying external submodule commit is published:
+   operating_system
+   2cdaea9853a109b87424f94e9fd9e67c11bebe04
+
+External submodule:
+   port
+Not committing inside it.
+Verifying external submodule commit is published:
+   port
+   ad086972ec16f5e28da306ace6961a714b985daa
+
+External submodule:
+   source
+Not committing inside it.
+Verifying external submodule commit is published:
+   source
+   2193f415771306523ee2f0fa96ab9ee0d64ae350
+No local changes to commit.
+
+============================================================
+PHASE 2: Checking for pending remote merges
+============================================================
+
+Preflight:
+   /export/home/camilo/code/console_build_tools
+Fetching origin/main...
+From github.com:ca2/sunos-console_build_tools
+ * branch            main       -> FETCH_HEAD
+
+============================================================
+PHASE 3: No pending merges. Pushing recursively.
+============================================================
+
+Pushing:
+   /export/home/camilo/code/console_build_tools
+to:
+   origin/main
+Everything up-to-date
+
+============================================================
+Recursive commit and push completed successfully.
+============================================================
