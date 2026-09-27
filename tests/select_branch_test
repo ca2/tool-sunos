@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+
+SCRIPT_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+
+WORK=$(mktemp -d)
+
+trap 'rm -rf "$WORK"' EXIT
+
+
+export GIT_AUTHOR_NAME='Select Branch Test'
+export GIT_AUTHOR_EMAIL='select-branch@example.invalid'
+export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
+export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
+
+
+git init --quiet "$WORK/repository"
+git -C "$WORK/repository" switch --quiet -c main
+git -C "$WORK/repository" commit --quiet --allow-empty -m initial
+git -C "$WORK/repository" branch feature
+
+
+(
+    cd "$WORK/repository"
+
+    printf '\nq\n' |
+        SELECT_BRANCH_PAGE_SIZE=20 \
+        "$SCRIPT_ROOT/bin/select_branch"
+) > "$WORK/relist.log" 2>&1
+
+
+test "$(git -C "$WORK/repository" branch --show-current)" = "main"
+
+test "$(grep -Fc 'Branches in:' "$WORK/relist.log")" -eq 2
+
+
+(
+    cd "$WORK/repository"
+
+    printf '1\n' |
+        SELECT_BRANCH_PAGE_SIZE=20 \
+        "$SCRIPT_ROOT/bin/select_branch"
+) > "$WORK/select.log" 2>&1
+
+
+test "$(git -C "$WORK/repository" branch --show-current)" = "feature"
+
+
+echo "PASS: empty input relisted branches"
+echo "PASS: q exited without changing branches"
+echo "PASS: a valid numbered selection switched branches"

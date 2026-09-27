@@ -406,20 +406,6 @@ commit_repository()
             fi
 
 
-            #
-            # Whatever happened inside the submodule, stage its gitlink
-            # in this parent.
-            #
-
-            if ! git add -- "$submodule_path"; then
-
-                popd
-
-                return 1
-
-            fi
-
-
         done < <(
             git config \
                 --file .gitmodules \
@@ -431,7 +417,10 @@ commit_repository()
 
 
     #
-    # Stage this repository's ordinary files and changed gitlinks.
+    # Stage this repository's ordinary files and changed gitlinks only
+    # after every child has completed successfully. If a later sibling
+    # fails, the parent index remains untouched and checkout can repair
+    # the tree on the next convergence cycle.
     #
 
     if ! git add -A -- .; then

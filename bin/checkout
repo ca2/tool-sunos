@@ -110,6 +110,37 @@ commit_is_available_from_origin()
 }
 
 
+index_has_only_gitlink_changes()
+{
+    local path
+    local head_mode
+    local index_mode
+
+
+    while IFS= read -r -d '' path; do
+
+        head_mode=$(git ls-tree HEAD -- "$path" |
+            awk 'NR == 1 { print $1 }')
+
+        index_mode=$(git ls-files --stage -- "$path" |
+            awk 'NR == 1 { print $1 }')
+
+
+        if [ "$head_mode" != "160000" ] &&
+           [ "$index_mode" != "160000" ]; then
+
+            return 1
+
+        fi
+
+
+    done < <(git diff --cached --name-only -z)
+
+
+    return 0
+}
+
+
 repository_is_clean()
 {
     #
@@ -120,8 +151,67 @@ repository_is_clean()
     #
 
     git diff --ignore-submodules=all --quiet &&
-    git diff --cached --quiet &&
-    [ -z "$(git ls-files --others --exclude-standard)" ]
+    [ -z "$(git ls-files --others --exclude-standard)" ] &&
+    {
+        git diff --cached --quiet ||
+        index_has_only_gitlink_changes
+    }
+}
+
+
+submodule_commit_is_available_from_origin()
+{
+    local submodule_path="$1"
+    local commit="$2"
+
+
+    (
+        cd "$submodule_path" || exit 1
+
+        commit_is_available_from_origin "$commit"
+    )
+}
+
+
+find_previous_published_gitlink()
+{
+    local submodule_path="$1"
+    local rejected_commit="$2"
+    local parent_commit
+    local candidate
+
+
+    while IFS= read -r parent_commit; do
+
+        candidate=$(git ls-tree \
+            "$parent_commit" \
+            -- "$submodule_path" |
+            awk '$1 == "160000" { print $3; exit }')
+
+
+        if [ -z "$candidate" ] ||
+           [ "$candidate" = "$rejected_commit" ]; then
+
+            continue
+
+        fi
+
+
+        if submodule_commit_is_available_from_origin \
+            "$submodule_path" \
+            "$candidate"; then
+
+            printf '%s\n' "$candidate"
+
+            return 0
+
+        fi
+
+
+    done < <(git rev-list HEAD -- "$submodule_path")
+
+
+    return 1
 }
 
 
@@ -640,6 +730,7 @@ process_owned_submodules()
     local submodule_url
     local submodule_branch
     local child_display
+    local selected_sha
 
 
     if [ ! -f .gitmodules ]; then
@@ -777,13 +868,49 @@ process_owned_submodules()
             # Then reproduce its nested tree exactly.
             #
 
+            selected_sha="$parent_selected_sha"
+
+
+            if ! submodule_commit_is_available_from_origin \
+                "$submodule_path" \
+                "$selected_sha"; then
+
+                echo
+                echo "Parent-selected external commit is unavailable:"
+                echo "   $selected_sha"
+                echo "Searching parent history for the nearest published gitlink..."
+
+
+                selected_sha=$(find_previous_published_gitlink \
+                    "$submodule_path" \
+                    "$parent_selected_sha" || true)
+
+
+                if [ -z "$selected_sha" ]; then
+
+                    echo
+                    echo "ERROR: No previously recorded published commit was found for:"
+                    echo "   $child_display"
+
+                    return 1
+
+                fi
+
+
+                echo "Recovering external submodule to:"
+                echo "   $selected_sha"
+                echo "The parent gitlink will remain modified for commit to repair."
+
+            fi
+
+
             (
                 cd "$submodule_path" || exit 1
 
                 update_third_party_repository \
                     "$child_display" \
                     "$submodule_branch" \
-                    "$parent_selected_sha"
+                    "$selected_sha"
             )
 
             if [ $? -ne 0 ]; then

@@ -120,6 +120,16 @@ rm -f "$WORK/parent/commit_pending_merges.txt"
 
 
 #
+# Publish the deliberately broken parent, reproducing the historical
+# damage that checkout must now repair from parent history.
+#
+
+git -C "$WORK/parent" add vendor
+git -C "$WORK/parent" commit --quiet -m broken-gitlink
+git -C "$WORK/parent" push --quiet origin main
+
+
+#
 # Checkout must be allowed to repair gitlink-only dirtiness.
 #
 
