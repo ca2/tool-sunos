@@ -1,0 +1,749 @@
+#!/usr/bin/env bash
+
+set -u
+
+
+#
+# ----------------------------------------------------------------------
+# Configuration
+# ----------------------------------------------------------------------
+#
+
+OWNED_REMOTE_REGEX='github\.com[:/](ca2|cpp-port)/'
+
+
+#
+# ----------------------------------------------------------------------
+# Helpers
+# ----------------------------------------------------------------------
+#
+
+is_owned_remote()
+{
+    local url="$1"
+
+    [[ "$url" =~ $OWNED_REMOTE_REGEX ]]
+}
+
+
+repository_is_clean()
+{
+    git diff --quiet &&
+    git diff --cached --quiet &&
+    [ -z "$(git ls-files --others --exclude-standard)" ]
+}
+
+
+repository_tree_is_clean()
+{
+    #
+    # Current repository.
+    #
+
+    if ! repository_is_clean; then
+        return 1
+    fi
+
+
+    #
+    # Every initialized nested submodule.
+    #
+
+    if [ -f .gitmodules ]; then
+
+        if ! git submodule foreach --quiet --recursive '
+            git diff --quiet &&
+            git diff --cached --quiet &&
+            [ -z "$(git ls-files --others --exclude-standard)" ]
+        '; then
+
+            return 1
+
+        fi
+
+    fi
+
+
+    return 0
+}
+
+
+show_repository_tree_status()
+{
+    echo
+    echo "Current repository:"
+
+    git status --short
+
+
+    if [ -f .gitmodules ]; then
+
+        git submodule foreach --recursive '
+            STATUS=$(git status --short)
+
+            if [ -n "$STATUS" ]; then
+
+                echo
+                echo "Submodule: $displaypath"
+                printf "%s\n" "$STATUS"
+
+            fi
+        '
+
+    fi
+}
+
+
+get_remote_default_branch()
+{
+    local branch
+
+
+    branch=$(git symbolic-ref \
+        --quiet \
+        --short refs/remotes/origin/HEAD \
+        2>/dev/null || true)
+
+
+    if [ -n "$branch" ]; then
+
+        printf '%s\n' "${branch#origin/}"
+
+        return 0
+
+    fi
+
+
+    if git show-ref \
+        --verify \
+        --quiet refs/remotes/origin/main; then
+
+        printf '%s\n' "main"
+
+        return 0
+
+    fi
+
+
+    if git show-ref \
+        --verify \
+        --quiet refs/remotes/origin/master; then
+
+        printf '%s\n' "master"
+
+        return 0
+
+    fi
+
+
+    return 1
+}
+
+
+ensure_submodule_initialized()
+{
+    local path="$1"
+
+
+    if git -C "$path" \
+        rev-parse \
+        --is-inside-work-tree \
+        >/dev/null 2>&1; then
+
+        return 0
+
+    fi
+
+
+    echo "Initializing submodule:"
+    echo "   $path"
+
+
+    git submodule update \
+        --init \
+        -- "$path"
+}
+
+
+#
+# ----------------------------------------------------------------------
+# Safely update a ca2/cpp-port repository.
+# ----------------------------------------------------------------------
+#
+
+update_owned_repository()
+{
+    local display_name="$1"
+    local configured_branch="${2:-}"
+
+    local branch
+    local local_commit
+    local remote_commit
+    local merge_base
+
+
+    echo
+    echo "--------------------------------------------------------"
+    echo "Updating ca2/cpp-port repository:"
+    echo "   $display_name"
+
+
+    if ! repository_is_clean; then
+
+        echo
+        echo "ERROR: Repository has local changes:"
+        echo "   $display_name"
+        echo
+
+        git status --short
+
+        return 1
+
+    fi
+
+
+    echo "Fetching origin..."
+
+    git fetch origin || return 1
+
+
+    #
+    # Prefer branch explicitly specified by the parent .gitmodules.
+    #
+
+    if [ -n "$configured_branch" ] &&
+       [ "$configured_branch" != "." ]; then
+
+        branch="$configured_branch"
+
+    else
+
+        branch=$(git symbolic-ref \
+            --quiet \
+            --short HEAD \
+            2>/dev/null || true)
+
+        if [ -z "$branch" ]; then
+
+            branch=$(get_remote_default_branch || true)
+
+        fi
+
+    fi
+
+
+    if [ -z "$branch" ]; then
+
+        echo "ERROR: Could not determine branch for:"
+        echo "   $display_name"
+
+        return 1
+
+    fi
+
+
+    echo "Target branch:"
+    echo "   $branch"
+
+
+    if ! git show-ref \
+        --verify \
+        --quiet "refs/remotes/origin/$branch"; then
+
+        echo "ERROR: Remote branch does not exist:"
+        echo "   origin/$branch"
+
+        return 1
+
+    fi
+
+
+    #
+    # Checkout existing local branch, or create it from origin.
+    #
+
+    if git show-ref \
+        --verify \
+        --quiet "refs/heads/$branch"; then
+
+        git checkout "$branch"
+
+    else
+
+        git checkout \
+            -b "$branch" \
+            --track "origin/$branch"
+
+    fi
+
+
+    local_commit=$(git rev-parse HEAD)
+    remote_commit=$(git rev-parse "origin/$branch")
+    merge_base=$(git merge-base HEAD "origin/$branch")
+
+
+    if [ "$local_commit" = "$remote_commit" ]; then
+
+        echo "Already up to date."
+
+
+    elif [ "$local_commit" = "$merge_base" ]; then
+
+        echo "Fast-forwarding to origin/$branch."
+
+        git merge \
+            --ff-only \
+            "origin/$branch"
+
+
+    elif [ "$remote_commit" = "$merge_base" ]; then
+
+        echo "Local branch is ahead of origin/$branch."
+        echo "Leaving local commits untouched."
+
+
+    else
+
+        echo
+        echo "ERROR: Local and remote branches have diverged:"
+        echo "   $display_name"
+        echo
+        echo "This repository must be merged before checkout can continue."
+
+        return 1
+
+    fi
+
+
+    return 0
+}
+
+
+#
+# ----------------------------------------------------------------------
+# Update one third-party tracking root.
+# ----------------------------------------------------------------------
+#
+
+update_third_party_repository()
+{
+    local display_name="$1"
+    local configured_branch="$2"
+    local parent_selected_sha="$3"
+
+    local branch
+
+
+    echo
+    echo "--------------------------------------------------------"
+    echo "Updating third-party repository:"
+    echo "   $display_name"
+
+
+    #
+    # We will potentially move this repository and forcibly restore its
+    # nested gitlinks, so first require the ENTIRE subtree to be clean.
+    #
+
+    if ! repository_tree_is_clean; then
+
+        echo
+        echo "ERROR: Third-party repository tree is not clean:"
+        echo "   $display_name"
+        echo
+        echo "Nothing was changed."
+        echo
+        echo "Dirty files/submodules:"
+
+        show_repository_tree_status
+
+        return 1
+
+    fi
+
+
+    #
+    # If the ca2 parent explicitly selected a tracking branch, update
+    # this third-party root to the latest HEAD of that branch.
+    #
+
+    if [ -n "$configured_branch" ] &&
+       [ "$configured_branch" != "." ]; then
+
+        branch="$configured_branch"
+
+
+        echo "Parent-selected tracking branch:"
+        echo "   $branch"
+
+        echo "Fetching origin..."
+
+        git fetch origin || return 1
+
+
+        if ! git show-ref \
+            --verify \
+            --quiet "refs/remotes/origin/$branch"; then
+
+            echo "ERROR: Remote branch does not exist:"
+            echo "   origin/$branch"
+
+            return 1
+
+        fi
+
+
+        #
+        # A third-party checkout is considered read-only.
+        #
+        # We don't merge local commits into upstream history.
+        #
+
+        if git show-ref \
+            --verify \
+            --quiet "refs/heads/$branch"; then
+
+            git checkout "$branch"
+
+        else
+
+            git checkout \
+                -b "$branch" \
+                --track "origin/$branch"
+
+        fi
+
+
+        LOCAL=$(git rev-parse HEAD)
+        REMOTE=$(git rev-parse "origin/$branch")
+        BASE=$(git merge-base HEAD "origin/$branch")
+
+
+        if [ "$LOCAL" = "$REMOTE" ]; then
+
+            echo "Third-party branch already at latest HEAD."
+
+
+        elif [ "$LOCAL" = "$BASE" ]; then
+
+            echo "Fast-forwarding third-party branch to origin/$branch."
+
+            git merge \
+                --ff-only \
+                "origin/$branch"
+
+
+        elif [ "$REMOTE" = "$BASE" ]; then
+
+            echo
+            echo "ERROR: Third-party repository contains local commits:"
+            echo "   $display_name"
+            echo
+            echo "It is read-only, so checkout will not discard them automatically."
+
+            return 1
+
+
+        else
+
+            echo
+            echo "ERROR: Third-party branch has diverged from origin/$branch:"
+            echo "   $display_name"
+
+            return 1
+
+        fi
+
+
+    else
+
+        #
+        # No tracking branch was specified by the ca2 parent.
+        #
+        # In that case preserve traditional Git submodule semantics:
+        # use exactly the commit recorded by the parent.
+        #
+
+        echo "No tracking branch recorded by parent."
+        echo "Using parent-selected commit:"
+        echo "   $parent_selected_sha"
+
+
+        git checkout \
+            --force \
+            "$parent_selected_sha"
+
+    fi
+
+
+    #
+    # IMPORTANT:
+    #
+    # We now have the desired HEAD for this third-party root.
+    #
+    # Its own submodules must NOT independently move to their latest
+    # upstream branches. They must reproduce the exact tree recorded by
+    # this new third-party HEAD.
+    #
+
+    if [ -f .gitmodules ]; then
+
+        echo
+        echo "Synchronizing nested third-party submodules..."
+
+        git submodule sync --recursive
+
+
+        echo "Restoring nested third-party tree to recorded commits..."
+
+        git submodule update \
+            --init \
+            --recursive \
+            --force
+
+    fi
+
+
+    return 0
+}
+
+
+#
+# ----------------------------------------------------------------------
+# Recursively process submodules belonging to a ca2/cpp-port repository.
+#
+# Notice that recursion STOPS when a third-party root is reached.
+#
+# update_third_party_repository() handles that complete subtree itself.
+# ----------------------------------------------------------------------
+#
+
+process_owned_submodules()
+{
+    local parent_display="$1"
+
+    local key
+    local submodule_path
+    local submodule_name
+    local submodule_url
+    local submodule_branch
+    local child_display
+
+
+    if [ ! -f .gitmodules ]; then
+        return 0
+    fi
+
+
+    git submodule sync
+
+
+    while IFS=' ' read -r key submodule_path; do
+
+        if [ -z "${key:-}" ] ||
+           [ -z "${submodule_path:-}" ]; then
+
+            continue
+
+        fi
+
+
+        submodule_name="${key#submodule.}"
+        submodule_name="${submodule_name%.path}"
+
+
+        submodule_url=$(git config \
+            --file .gitmodules \
+            --get "submodule.${submodule_name}.url" \
+            2>/dev/null || true)
+
+
+        submodule_branch=$(git config \
+            --file .gitmodules \
+            --get "submodule.${submodule_name}.branch" \
+            2>/dev/null || true)
+
+
+        if [ "$parent_display" = "." ]; then
+
+            child_display="$submodule_path"
+
+        else
+
+            child_display="$parent_display/$submodule_path"
+
+        fi
+
+
+        echo
+        echo "========================================================"
+        echo "Submodule:"
+        echo "   $child_display"
+        echo "URL:"
+        echo "   $submodule_url"
+
+        if [ -n "$submodule_branch" ]; then
+
+            echo "Parent-selected branch:"
+            echo "   $submodule_branch"
+
+        else
+
+            echo "Parent-selected branch:"
+            echo "   <none - pinned commit>"
+
+        fi
+
+
+        ensure_submodule_initialized "$submodule_path" || return 1
+
+
+        #
+        # Obtain the commit currently recorded by THIS parent.
+        #
+
+        parent_selected_sha=$(git ls-tree \
+            HEAD \
+            -- "$submodule_path" |
+            awk '{print $3}')
+
+
+        if [ -z "$parent_selected_sha" ]; then
+
+            echo "ERROR: Could not determine parent-selected commit for:"
+            echo "   $child_display"
+
+            return 1
+
+        fi
+
+
+        if is_owned_remote "$submodule_url"; then
+
+            #
+            # ca2/cpp-port:
+            # update branch and recurse with ca2 rules.
+            #
+
+            (
+                cd "$submodule_path" || exit 1
+
+                update_owned_repository \
+                    "$child_display" \
+                    "$submodule_branch" || exit 1
+
+
+                process_owned_submodules \
+                    "$child_display" || exit 1
+            )
+
+            if [ $? -ne 0 ]; then
+                return 1
+            fi
+
+
+        else
+
+            #
+            # External repository:
+            #
+            # - branch specified by ca2 parent:
+            #       update root to latest branch HEAD
+            #
+            # - no branch:
+            #       use exact parent's gitlink
+            #
+            # Then reproduce its nested tree exactly.
+            #
+
+            (
+                cd "$submodule_path" || exit 1
+
+                update_third_party_repository \
+                    "$child_display" \
+                    "$submodule_branch" \
+                    "$parent_selected_sha"
+            )
+
+            if [ $? -ne 0 ]; then
+                return 1
+            fi
+
+        fi
+
+
+    done < <(
+        git config \
+            --file .gitmodules \
+            --get-regexp '^submodule\..*\.path$' \
+            2>/dev/null || true
+    )
+
+
+    return 0
+}
+
+
+#
+# ----------------------------------------------------------------------
+# Main
+# ----------------------------------------------------------------------
+#
+
+ROOT=$(git rev-parse \
+    --show-toplevel \
+    2>/dev/null || true)
+
+
+if [ -z "$ROOT" ]; then
+
+    echo "ERROR: Current directory is not inside a Git repository."
+
+    exit 1
+
+fi
+
+
+cd "$ROOT" || exit 1
+
+
+echo "=== Starting Recursive Git Repository Update ==="
+echo
+echo "Root repository:"
+echo "   $ROOT"
+
+
+#
+# Update the root itself first.
+#
+
+if ! update_owned_repository "." ""; then
+
+    echo
+    echo "ERROR: Could not safely update root repository."
+
+    exit 1
+
+fi
+
+
+#
+# Process the submodule hierarchy according to the new rules.
+#
+
+if ! process_owned_submodules "."; then
+
+    echo
+    echo "========================================================"
+    echo "=== Checkout/update stopped because of an error. ==="
+    echo "========================================================"
+
+    exit 1
+
+fi
+
+
+echo
+echo "========================================================"
+echo "=== Repository tree successfully updated! ==="
+echo "========================================================"
