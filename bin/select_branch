@@ -3,6 +3,45 @@
 set -u
 
 
+ERROR_COLOR=""
+SUCCESS_COLOR=""
+ERROR_RESET=""
+SUCCESS_RESET=""
+
+
+if [ -z "${NO_COLOR+x}" ] && [ "${TERM:-}" != "dumb" ]; then
+
+    if [ -t 2 ]; then
+        ERROR_COLOR=$'\033[1;31m'
+        ERROR_RESET=$'\033[0m'
+    fi
+
+    if [ -t 1 ]; then
+        SUCCESS_COLOR=$'\033[1;32m'
+        SUCCESS_RESET=$'\033[0m'
+    fi
+
+fi
+
+
+print_error()
+{
+    printf '%s%s%s\n' \
+        "$ERROR_COLOR" \
+        "$*" \
+        "$ERROR_RESET" >&2
+}
+
+
+print_success()
+{
+    printf '%s%s%s\n' \
+        "$SUCCESS_COLOR" \
+        "$*" \
+        "$SUCCESS_RESET"
+}
+
+
 cancel_selection()
 {
     echo
@@ -22,7 +61,7 @@ ROOT=$(git rev-parse \
 
 if [ -z "$ROOT" ]; then
 
-    echo "ERROR: Current directory is not inside a Git repository."
+    print_error "ERROR: Current directory is not inside a Git repository."
 
     exit 1
 
@@ -57,7 +96,7 @@ fi
 if ! [[ "$PAGE_SIZE" =~ ^[0-9]+$ ]] ||
    [ "$PAGE_SIZE" -lt 1 ]; then
 
-    echo "ERROR: SELECT_BRANCH_PAGE_SIZE must be a positive integer."
+    print_error "ERROR: SELECT_BRANCH_PAGE_SIZE must be a positive integer."
 
     exit 1
 
@@ -197,14 +236,30 @@ select_branch()
 
     if [ "$type" = "local" ]; then
 
-        git checkout "$ref"
+        if git checkout "$ref"; then
 
-        return $?
+            print_success "Branch selected successfully: $ref"
+
+            return 0
+
+        fi
+
+
+        return 1
 
     fi
 
 
-    git checkout --track "$ref"
+    if git checkout --track "$ref"; then
+
+        print_success "Branch selected successfully: $ref"
+
+        return 0
+
+    fi
+
+
+    return 1
 }
 
 
@@ -218,7 +273,7 @@ while true; do
 
     if [ "$branch_count" -eq 0 ]; then
 
-        echo "No local or remote branches were found."
+        print_error "ERROR: No local or remote branches were found."
 
         exit 1
 
@@ -329,7 +384,7 @@ while true; do
 
 
                 echo
-                echo "Branch selection failed. The repository was not switched."
+                print_error "ERROR: Branch selection failed. The repository was not switched."
                 echo "Press Enter to list the branches again, or enter q to quit."
                 printf '> '
 
