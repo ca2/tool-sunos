@@ -1,0 +1,1718 @@
+#!/usr/bin/env bash
+
+set -u
+
+
+#
+# ----------------------------------------------------------------------
+# Configuration
+# ----------------------------------------------------------------------
+#
+
+MERGE_TOOL="${MERGE_TOOL:-meld}"
+
+PENDING_FILE="commit_pending_merges.txt"
+DEDICATORY_FILE="$HOME/dedicatory.txt"
+
+OWNED_REMOTE_REGEX='github\.com[:/](ca2|cpp-port)/'
+
+
+ERROR_COLOR=""
+SUCCESS_COLOR=""
+ERROR_RESET=""
+SUCCESS_RESET=""
+
+
+if [ -z "${NO_COLOR+x}" ] && [ "${TERM:-}" != "dumb" ]; then
+
+    if [ -t 2 ]; then
+        ERROR_COLOR=$'\033[1;31m'
+        ERROR_RESET=$'\033[0m'
+    fi
+
+    if [ -t 1 ]; then
+        SUCCESS_COLOR=$'\033[1;34m'
+        SUCCESS_RESET=$'\033[0m'
+    fi
+
+fi
+
+
+print_error()
+{
+
+    printf '%s%s%s\n' \
+        "$ERROR_COLOR" \
+        "$*" \
+        "$ERROR_RESET" >&2
+
+}
+
+
+print_success()
+{
+
+    printf '%s%s%s\n' \
+        "$SUCCESS_COLOR" \
+        "$*" \
+        "$SUCCESS_RESET"
+
+}
+
+
+#
+# ----------------------------------------------------------------------
+# Utility functions
+# ----------------------------------------------------------------------
+#
+
+pushd()
+{
+
+    command pushd "$@" > /dev/null
+
+}
+
+
+popd()
+{
+
+    command popd "$@" > /dev/null
+
+}
+
+
+get_branch()
+{
+
+    local configured_branch="${1:-}"
+    local branch
+
+
+    if [ -n "$configured_branch" ] &&
+       [ "$configured_branch" != "." ]; then
+
+        printf '%s\n' "$configured_branch"
+
+        return 0
+
+    fi
+
+
+    branch=$(git symbolic-ref \
+        --quiet \
+        --short HEAD \
+        2>/dev/null || true)
+
+
+    if [ -n "$branch" ]; then
+
+        printf '%s\n' "$branch"
+
+        return 0
+
+    fi
+
+
+    branch=$(git symbolic-ref \
+        --quiet \
+        --short refs/remotes/origin/HEAD \
+        2>/dev/null || true)
+
+
+    if [ -n "$branch" ]; then
+
+        printf '%s\n' "${branch#origin/}"
+
+        return 0
+
+    fi
+
+
+    if git show-ref \
+        --verify \
+        --quiet refs/remotes/origin/main; then
+
+        printf '%s\n' "main"
+
+        return 0
+
+    fi
+
+
+    if git show-ref \
+        --verify \
+        --quiet refs/remotes/origin/master; then
+
+        printf '%s\n' "master"
+
+        return 0
+
+    fi
+
+
+    printf '%s\n' "main"
+
+}
+
+
+is_owned_remote()
+{
+
+    local url="$1"
+
+    [[ "$url" =~ $OWNED_REMOTE_REGEX ]]
+
+}
+
+
+get_submodule_remote_url()
+{
+
+    local submodule_name="$1"
+    local submodule_path="$2"
+    local url
+
+
+    url=$(git config \
+        --get "submodule.${submodule_name}.url" \
+        2>/dev/null || true)
+
+
+    if [ -z "$url" ] &&
+       git -C "$submodule_path" rev-parse \
+        --is-inside-work-tree \
+        >/dev/null 2>&1; then
+
+        url=$(git -C "$submodule_path" remote get-url \
+            origin \
+            2>/dev/null || true)
+
+    fi
+
+
+    if [ -z "$url" ]; then
+
+        url=$(git config \
+            --file .gitmodules \
+            --get "submodule.${submodule_name}.url" \
+            2>/dev/null || true)
+
+    fi
+
+
+    printf '%s\n' "$url"
+
+}
+
+
+commit_is_available_from_origin()
+{
+
+    local directory="$1"
+    local commit="$2"
+    local remote_tags
+
+
+    if ! git -C "$directory" fetch \
+        --prune \
+        origin \
+        '+refs/heads/*:refs/remotes/origin/*'; then
+
+        return 1
+
+    fi
+
+
+    if git -C "$directory" for-each-ref \
+        --format='%(refname)' \
+        --contains="$commit" \
+        refs/remotes/origin |
+        grep -q .; then
+
+        return 0
+
+    fi
+
+
+    remote_tags=$(git -C "$directory" ls-remote \
+        --tags \
+        origin \
+        2>/dev/null || true)
+
+
+    if printf '%s\n' "$remote_tags" |
+        awk '{print $1}' |
+        grep -Fqx -- "$commit"; then
+
+        return 0
+
+    fi
+
+
+    return 1
+
+}
+
+
+verify_external_submodules()
+{
+
+    local key
+    local submodule_path
+    local submodule_name
+    local submodule_url
+    local commit
+    local worktree_commit
+
+
+    if [ ! -f .gitmodules ]; then
+
+        return 0
+
+    fi
+
+
+    while IFS=' ' read -r key submodule_path; do
+
+        if [ -z "${key:-}" ] ||
+           [ -z "${submodule_path:-}" ]; then
+
+            continue
+
+        fi
+
+
+        submodule_name="${key#submodule.}"
+        submodule_name="${submodule_name%.path}"
+
+        submodule_url=$(get_submodule_remote_url \
+            "$submodule_name" \
+            "$submodule_path")
+
+
+        if is_owned_remote "$submodule_url"; then
+
+            continue
+
+        fi
+
+
+        if ! git -C "$submodule_path" rev-parse \
+            --is-inside-work-tree \
+            >/dev/null 2>&1; then
+
+            echo
+            print_error "ERROR: Cannot validate uninitialized external submodule:"
+            echo "   $submodule_path"
+
+            return 1
+
+        fi
+
+
+        commit=$(git ls-files \
+            --stage \
+            -- "$submodule_path" |
+            awk '$1 == "160000" { print $2; exit }')
+
+
+        if [ -z "$commit" ]; then
+
+            echo
+            print_error "ERROR: Could not read staged gitlink for:"
+            echo "   $submodule_path"
+
+            return 1
+
+        fi
+
+
+        echo "Verifying external submodule commit is published:"
+        echo "   $submodule_path"
+        echo "   $commit"
+
+
+        if ! commit_is_available_from_origin \
+            "$submodule_path" \
+            "$commit"; then
+
+            echo
+            print_error "ERROR: Refusing to commit an external gitlink that"
+            echo "is not reachable from any advertised origin ref:"
+            echo "   Path   : $submodule_path"
+            echo "   URL    : $submodule_url"
+            echo "   Commit : $commit"
+
+            return 1
+
+        fi
+
+
+        worktree_commit=$(git -C "$submodule_path" rev-parse HEAD)
+
+
+        if [ "$worktree_commit" != "$commit" ]; then
+
+            echo "Verifying external submodule worktree HEAD is published:"
+            echo "   $submodule_path"
+            echo "   $worktree_commit"
+
+
+            if ! commit_is_available_from_origin \
+                "$submodule_path" \
+                "$worktree_commit"; then
+
+                echo
+                print_error "ERROR: Refusing to stage an external submodule"
+                echo "worktree HEAD that is not advertised by origin:"
+                echo "   Path   : $submodule_path"
+                echo "   URL    : $submodule_url"
+                echo "   Commit : $worktree_commit"
+
+                return 1
+
+            fi
+
+        fi
+
+
+    done < <(
+        git config \
+            --file .gitmodules \
+            --get-regexp '^submodule\..*\.path$' \
+            2>/dev/null || true
+    )
+
+
+    return 0
+
+}
+
+
+has_conflicts()
+{
+
+    git diff \
+        --name-only \
+        --diff-filter=U |
+        grep -q .
+
+}
+
+
+get_conflict_count()
+{
+
+    git diff \
+        --name-only \
+        --diff-filter=U |
+        sed '/^[[:space:]]*$/d' |
+        wc -l |
+        tr -d '[:space:]'
+
+}
+
+
+get_first_conflict()
+{
+
+    git diff \
+        --name-only \
+        --diff-filter=U |
+        sed -n '1p'
+
+}
+
+
+is_file_still_conflicted()
+{
+
+    local filename="$1"
+
+    git diff \
+        --name-only \
+        --diff-filter=U \
+        -- "$filename" |
+        grep -q .
+
+}
+
+
+show_conflicts()
+{
+
+    local count
+
+    count=$(get_conflict_count)
+
+
+    echo
+    echo "Unresolved conflicts: $count"
+    echo
+
+
+    git diff \
+        --name-only \
+        --diff-filter=U |
+        sed 's/^/   /'
+
+
+    echo
+
+}
+
+
+ensure_mergetool_available()
+{
+
+    if command -v "$MERGE_TOOL" >/dev/null 2>&1; then
+
+        return 0
+
+    fi
+
+
+    echo
+    print_error "ERROR: Merge conflicts require a merge tool, but this"
+    echo "configured tool was not found:"
+    echo
+    echo "   $MERGE_TOOL"
+    echo
+    echo "You can choose another tool, for example:"
+    echo
+    echo "   MERGE_TOOL=vimdiff merge"
+    echo
+    echo "or:"
+    echo
+    echo "   MERGE_TOOL=kdiff3 merge"
+
+    return 1
+
+}
+
+
+remove_from_pending_file()
+{
+
+    local relative_path="$1"
+    local temporary_file
+
+
+    temporary_file="${PENDING_PATH}.tmp.$$"
+
+
+    awk -v target="$relative_path" '
+
+        $0 != target {
+            print
+        }
+
+    ' "$PENDING_PATH" > "$temporary_file"
+
+
+    mv "$temporary_file" "$PENDING_PATH"
+
+}
+
+
+#
+# ----------------------------------------------------------------------
+# Submodule conflict support
+# ----------------------------------------------------------------------
+#
+
+is_submodule_conflict()
+{
+
+    local filename="$1"
+
+
+    git ls-files \
+        -u \
+        -- "$filename" |
+        awk '
+
+            $1 == "160000" {
+                found = 1
+            }
+
+            END {
+                exit !found
+            }
+
+        '
+
+}
+
+
+get_submodule_conflict_sha()
+{
+
+    local filename="$1"
+    local stage="$2"
+
+
+    git ls-files \
+        -u \
+        -- "$filename" |
+        awk -v wanted_stage="$stage" '
+
+            $1 == "160000" && $3 == wanted_stage {
+                print $2
+                exit
+            }
+
+        '
+
+}
+
+
+submodule_is_initialized()
+{
+
+    local filename="$1"
+
+
+    git -C "$filename" rev-parse \
+        --is-inside-work-tree \
+        >/dev/null 2>&1
+
+}
+
+
+submodule_commit_exists()
+{
+
+    local filename="$1"
+    local commit="$2"
+
+
+    git -C "$filename" cat-file \
+        -e "${commit}^{commit}" \
+        2>/dev/null
+
+}
+
+
+align_submodule_worktree()
+{
+
+    local filename="$1"
+    local selected_commit="$2"
+
+    local worktree_commit
+    local worktree_status
+
+
+    if ! submodule_is_initialized "$filename"; then
+
+        #
+        # An uninitialized submodule has no worktree to align.
+        # Resolving the gitlink in the parent index is sufficient.
+        #
+
+        return 0
+
+    fi
+
+
+    worktree_commit=$(git -C "$filename" rev-parse HEAD)
+
+
+    if [ "$worktree_commit" = "$selected_commit" ]; then
+
+        return 0
+
+    fi
+
+
+    worktree_status=$(git -C "$filename" status \
+        --porcelain \
+        --untracked-files=all)
+
+
+    if [ -n "$worktree_status" ]; then
+
+        echo
+        print_error "ERROR: Refusing to move a dirty submodule worktree:"
+        echo "   $filename"
+        echo
+        echo "Current submodule HEAD:"
+        echo "   $worktree_commit"
+        echo
+        echo "Selected merge commit:"
+        echo "   $selected_commit"
+        echo
+        echo "The submodule contains local changes:"
+        echo
+        printf '%s\n' "$worktree_status" |
+            sed 's/^/   /'
+        echo
+        echo "Commit, stash, or otherwise handle those changes first."
+
+        return 1
+
+    fi
+
+
+    if ! submodule_commit_exists \
+        "$filename" \
+        "$selected_commit"; then
+
+        echo
+        echo "Selected commit is not available in the submodule worktree."
+        echo "Fetching origin:"
+        echo "   $filename"
+
+
+        if ! git -C "$filename" fetch \
+            --prune \
+            origin; then
+
+            echo
+            print_error "ERROR: Could not fetch the selected submodule commit."
+
+            return 1
+
+        fi
+
+    fi
+
+
+    if ! submodule_commit_exists \
+        "$filename" \
+        "$selected_commit"; then
+
+        echo
+        print_error "ERROR: Selected commit is still unavailable:"
+        echo "   $selected_commit"
+        echo
+        echo "Submodule:"
+        echo "   $filename"
+
+        return 1
+
+    fi
+
+
+    echo
+    echo "Updating submodule worktree:"
+    echo "   $filename"
+    echo
+    echo "Checking out:"
+    echo "   $selected_commit"
+
+
+    if ! git -C "$filename" checkout \
+        --detach \
+        "$selected_commit"; then
+
+        echo
+        print_error "ERROR: Could not move submodule worktree to selected commit."
+
+        return 1
+
+    fi
+
+
+    return 0
+
+}
+
+
+resolve_submodule_conflict()
+{
+
+    local filename="$1"
+
+    local base_commit
+    local local_commit
+    local remote_commit
+    local selected_commit
+    local answer
+
+
+    base_commit=$(get_submodule_conflict_sha \
+        "$filename" \
+        1)
+
+    local_commit=$(get_submodule_conflict_sha \
+        "$filename" \
+        2)
+
+    remote_commit=$(get_submodule_conflict_sha \
+        "$filename" \
+        3)
+
+
+    if [ -z "$local_commit" ] ||
+       [ -z "$remote_commit" ]; then
+
+        echo
+        print_error "ERROR: Could not determine both sides of submodule conflict:"
+        echo "   $filename"
+        echo
+        echo "Unmerged index entries:"
+        git ls-files -u -- "$filename" |
+            sed 's/^/   /'
+
+        return 1
+
+    fi
+
+
+    echo
+    echo "============================================================"
+    echo "SUBMODULE MERGE CONFLICT"
+    echo "============================================================"
+    echo
+    echo "Submodule:"
+    echo "   $filename"
+    echo
+
+    if [ -n "$base_commit" ]; then
+
+        echo "Merge base:"
+        echo "   $base_commit"
+        echo
+
+    fi
+
+    echo "Local / ours:"
+    echo "   $local_commit"
+    echo
+    echo "Remote / theirs:"
+    echo "   $remote_commit"
+    echo
+    echo "Actions:"
+    echo
+    echo "   l       Use local / ours"
+    echo "   r       Use remote / theirs"
+    echo "   q       Stop the merge wizard"
+    echo
+
+
+    while true; do
+
+        printf "> "
+
+        IFS= read -r answer
+
+
+        case "$answer" in
+
+            l|L)
+
+                selected_commit="$local_commit"
+
+                break
+                ;;
+
+
+            r|R)
+
+                selected_commit="$remote_commit"
+
+                break
+                ;;
+
+
+            q|Q)
+
+                echo
+                echo "Merge wizard stopped by user."
+
+                return 1
+                ;;
+
+
+            *)
+
+                echo
+                echo "Please enter l, r, or q."
+                echo
+                ;;
+
+        esac
+
+    done
+
+
+    #
+    # Align an initialized submodule worktree first.
+    #
+    # Do this BEFORE modifying the parent index. If alignment cannot be
+    # performed safely, the gitlink remains conflicted and the operation
+    # can be retried without a half-resolved parent index.
+    #
+
+    if ! align_submodule_worktree \
+        "$filename" \
+        "$selected_commit"; then
+
+        return 1
+
+    fi
+
+
+    #
+    # A submodule entry in the Git index has mode 160000.
+    #
+    # Replace stages 1/2/3 with one normal stage-0 gitlink pointing to
+    # the commit selected by the user.
+    #
+
+    if ! git update-index \
+        --cacheinfo \
+        "160000,$selected_commit,$filename"; then
+
+        echo
+        print_error "ERROR: Could not stage selected submodule gitlink:"
+        echo "   $filename"
+        echo "   $selected_commit"
+
+        return 1
+
+    fi
+
+
+    if is_file_still_conflicted "$filename"; then
+
+        echo
+        print_error "ERROR: Submodule is still marked as conflicted:"
+        echo "   $filename"
+
+        return 1
+
+    fi
+
+
+    echo
+    print_success "Resolved submodule:"
+    echo "   $filename"
+    echo
+    echo "Selected commit:"
+    echo "   $selected_commit"
+
+
+    return 0
+
+}
+
+
+#
+# ----------------------------------------------------------------------
+# Commit local changes generated by child merges.
+#
+# After a child repository changes HEAD, its parent sees a modified
+# submodule gitlink. Before merging the parent, record that gitlink.
+#
+# The first commit run before this merge wizard should already have
+# committed all ordinary source changes, so at this stage the expected
+# changes are principally submodule pointers produced by completed
+# child merges.
+# ----------------------------------------------------------------------
+#
+
+commit_propagated_child_changes()
+{
+
+    local relative_path="$1"
+
+
+    if git diff --quiet &&
+       git diff --cached --quiet; then
+
+        return 0
+
+    fi
+
+
+    echo
+    echo "Local changes exist before merging:"
+    echo "   $relative_path"
+    echo
+
+
+    git status --short
+
+
+    if [ ! -f "$DEDICATORY_FILE" ]; then
+
+        echo
+        print_error "ERROR: Commit message file does not exist:"
+        echo "   $DEDICATORY_FILE"
+
+        return 1
+
+    fi
+
+
+    echo
+    echo "Recording merged child submodule references before"
+    echo "merging this repository."
+
+
+    if ! verify_external_submodules; then
+
+        return 1
+
+    fi
+
+
+    git add -A
+
+
+    if ! verify_external_submodules; then
+
+        return 1
+
+    fi
+
+
+    if git diff --cached --quiet; then
+
+        return 0
+
+    fi
+
+
+    if ! git commit \
+        -F "$DEDICATORY_FILE"; then
+
+        echo
+        print_error "ERROR: Could not commit propagated child changes."
+
+        return 1
+
+    fi
+
+
+    return 0
+
+}
+
+
+#
+# ----------------------------------------------------------------------
+# Conflict wizard
+# ----------------------------------------------------------------------
+#
+
+resolve_conflicts_wizard()
+{
+
+    local repository_relative_path="$1"
+
+    local conflict_file
+    local conflict_count
+    local answer
+    local mergetool_result
+
+
+    while has_conflicts; do
+
+        conflict_count=$(get_conflict_count)
+        conflict_file=$(get_first_conflict)
+
+
+        if [ -z "$conflict_file" ]; then
+
+            echo
+            print_error "ERROR: Git reports conflicts but no conflicted file"
+            echo "could be determined."
+
+            return 1
+
+        fi
+
+
+        #
+        # Gitlinks/submodules cannot be resolved by opening them in a
+        # normal file merge tool. Resolve stage 2/3 explicitly.
+        #
+
+        if is_submodule_conflict "$conflict_file"; then
+
+            echo
+            echo "Repository:"
+            echo "   $repository_relative_path"
+            echo
+            echo "Conflicts remaining:"
+            echo "   $conflict_count"
+
+
+            if ! resolve_submodule_conflict \
+                "$conflict_file"; then
+
+                return 1
+
+            fi
+
+
+            continue
+
+        fi
+
+
+        #
+        # Ordinary file conflict.
+        #
+
+        echo
+        echo "============================================================"
+        echo "MERGE CONFLICT"
+        echo "============================================================"
+        echo
+        echo "Repository:"
+        echo "   $repository_relative_path"
+        echo
+        echo "Conflicts remaining:"
+        echo "   $conflict_count"
+        echo
+        echo "Next file:"
+        echo "   $conflict_file"
+        echo
+        echo "Actions:"
+        echo
+        echo "   Enter   Open this file in $MERGE_TOOL"
+        echo "   s       Show all remaining conflicts"
+        echo "   q       Stop the merge wizard"
+        echo
+
+
+        printf "> "
+
+        IFS= read -r answer
+
+
+        case "$answer" in
+
+            q|Q)
+
+                echo
+                echo "Merge wizard stopped by user."
+
+                return 1
+                ;;
+
+
+            s|S)
+
+                show_conflicts
+
+                continue
+                ;;
+
+
+            "")
+
+                ;;
+
+
+            *)
+
+                echo
+                echo "Unknown command."
+
+                continue
+                ;;
+
+        esac
+
+
+        if ! ensure_mergetool_available; then
+
+            return 1
+
+        fi
+
+
+        echo
+        echo "Opening:"
+        echo "   $conflict_file"
+        echo
+        echo "Using:"
+        echo "   $MERGE_TOOL"
+        echo
+
+
+        git mergetool \
+            --tool="$MERGE_TOOL" \
+            --no-prompt \
+            -- "$conflict_file"
+
+        mergetool_result=$?
+
+
+        if is_file_still_conflicted "$conflict_file"; then
+
+            echo
+            echo "The file is still conflicted:"
+            echo "   $conflict_file"
+
+
+            if [ "$mergetool_result" -ne 0 ]; then
+
+                echo
+                echo "The merge tool also returned an error."
+
+            fi
+
+
+            echo
+            echo "The same file will be presented again."
+
+            continue
+
+        fi
+
+
+        git add -- "$conflict_file"
+
+
+        echo
+        print_success "Resolved:"
+        echo "   $conflict_file"
+
+    done
+
+
+    echo
+    print_success "All conflicts in this repository have been resolved."
+
+    return 0
+
+}
+
+
+#
+# ----------------------------------------------------------------------
+# Merge one repository
+# ----------------------------------------------------------------------
+#
+
+merge_repository()
+{
+
+    local repository="$1"
+    local relative_path="$2"
+
+    local branch
+    local merge_result
+
+
+    echo
+    echo "################################################################"
+    echo "Repository:"
+    echo "   $relative_path"
+    echo
+    echo "Path:"
+    echo "   $repository"
+    echo "################################################################"
+    echo
+
+
+    pushd "$repository" || return 1
+
+
+    if ! git rev-parse \
+        --is-inside-work-tree \
+        >/dev/null 2>&1; then
+
+        print_error "ERROR: Not a Git repository:"
+        echo "   $repository"
+
+        popd
+
+        return 1
+
+    fi
+
+
+    #
+    # An existing merge takes priority.
+    #
+
+    if [ -f "$(git rev-parse --git-path MERGE_HEAD)" ]; then
+
+        echo "An unfinished merge already exists."
+
+
+        if has_conflicts; then
+
+            if ! resolve_conflicts_wizard "$relative_path"; then
+
+                popd
+
+                return 1
+
+            fi
+
+        fi
+
+
+        #
+        # Do NOT run `git add -A` here.
+        #
+        # Each ordinary conflict has already been staged explicitly with
+        # git add, and each submodule conflict has already been staged
+        # explicitly with git update-index.
+        #
+        # Running git add -A here could replace a deliberately selected
+        # submodule gitlink with the current submodule worktree HEAD.
+        #
+
+
+        if ! verify_external_submodules; then
+
+            popd
+
+            return 1
+
+        fi
+
+
+        echo
+        echo "Completing existing merge."
+
+
+        if ! git commit --no-edit; then
+
+            echo
+            print_error "ERROR: Could not complete existing merge."
+
+            popd
+
+            return 1
+
+        fi
+
+
+        popd
+
+        return 0
+
+    fi
+
+
+    #
+    # IMPORTANT:
+    #
+    # A previously merged child may have changed its gitlink in this
+    # repository. Record that pointer before attempting this repository's
+    # own remote merge.
+    #
+
+    if ! commit_propagated_child_changes "$relative_path"; then
+
+        popd
+
+        return 1
+
+    fi
+
+
+    branch=$(get_branch)
+
+
+    echo
+    echo "Target remote branch:"
+    echo "   origin/$branch"
+
+
+    echo
+    echo "Fetching origin..."
+
+
+    if ! git fetch origin; then
+
+        echo
+        print_error "ERROR: Could not fetch origin."
+
+        popd
+
+        return 1
+
+    fi
+
+
+    if ! git show-ref \
+        --verify \
+        --quiet \
+        "refs/remotes/origin/$branch"; then
+
+        echo
+        print_error "ERROR: Remote branch does not exist:"
+        echo "   origin/$branch"
+
+        popd
+
+        return 1
+
+    fi
+
+
+    #
+    # It may have ceased to need a merge since the pending file was
+    # generated.
+    #
+
+    if git merge-base \
+        --is-ancestor \
+        "origin/$branch" \
+        HEAD; then
+
+        echo
+        echo "No merge is currently required."
+        echo "HEAD already contains origin/$branch."
+
+        popd
+
+        return 0
+
+    fi
+
+
+    echo
+    echo "Merging:"
+    echo "   origin/$branch"
+    echo "into current HEAD..."
+
+
+    git merge \
+        --no-commit \
+        --no-edit \
+        "origin/$branch"
+
+    merge_result=$?
+
+
+    if [ "$merge_result" -eq 0 ]; then
+
+        git add -A
+
+
+        if ! verify_external_submodules; then
+
+            popd
+
+            return 1
+
+        fi
+
+
+        if [ -f "$(git rev-parse --git-path MERGE_HEAD)" ]; then
+
+            echo
+            echo "Completing validated merge commit..."
+
+
+            if ! git commit --no-edit; then
+
+                echo
+                print_error "ERROR: Could not complete merge commit."
+
+                popd
+
+                return 1
+
+            fi
+
+        fi
+
+
+        echo
+        echo "Merge completed automatically with no conflicts."
+
+        popd
+
+        return 0
+
+    fi
+
+
+    if ! has_conflicts; then
+
+        echo
+        print_error "ERROR: git merge failed but Git reports no file conflicts."
+        echo
+        echo "Inspect manually:"
+        echo "   $repository"
+
+        popd
+
+        return 1
+
+    fi
+
+
+    show_conflicts
+
+
+    echo "Git automatically merged everything it could."
+    echo "Only unresolved files will be shown by the wizard."
+
+
+    if ! resolve_conflicts_wizard "$relative_path"; then
+
+        popd
+
+        return 1
+
+    fi
+
+
+    if has_conflicts; then
+
+        echo
+        print_error "ERROR: unresolved conflicts remain."
+
+        popd
+
+        return 1
+
+    fi
+
+
+    #
+    # Do NOT run `git add -A` here.
+    #
+    # resolve_conflicts_wizard() stages every ordinary file and every
+    # chosen submodule gitlink explicitly. Restaging the entire worktree
+    # here could overwrite a selected submodule gitlink.
+    #
+
+
+    if ! verify_external_submodules; then
+
+        popd
+
+        return 1
+
+    fi
+
+
+    echo
+    echo "Completing merge commit..."
+
+
+    if ! git commit --no-edit; then
+
+        echo
+        print_error "ERROR: Could not complete merge commit."
+
+        popd
+
+        return 1
+
+    fi
+
+
+    echo
+    print_success "Merge completed successfully."
+
+
+    popd
+
+    return 0
+
+}
+
+
+#
+# ----------------------------------------------------------------------
+# Main
+# ----------------------------------------------------------------------
+#
+
+ROOT=$(git rev-parse \
+    --show-toplevel \
+    2>/dev/null || true)
+
+
+if [ -z "$ROOT" ]; then
+
+    print_error "ERROR: Current directory is not inside a Git repository."
+
+    exit 1
+
+fi
+
+
+PENDING_PATH="$ROOT/$PENDING_FILE"
+
+
+if [ ! -f "$PENDING_PATH" ]; then
+
+    print_success "No pending merge file exists; nothing to do:"
+    echo
+    echo "   $PENDING_PATH"
+
+    exit 0
+
+fi
+
+
+if [ ! -s "$PENDING_PATH" ]; then
+
+    print_success "Pending merge file is empty; nothing to do:"
+    echo
+    echo "   $PENDING_PATH"
+
+    exit 0
+
+fi
+
+
+echo
+echo "============================================================"
+echo "ca2 Guided Merge Wizard"
+echo "============================================================"
+echo
+echo "Merge tool (used only for ordinary file conflicts):"
+echo "   $MERGE_TOOL"
+echo
+echo "Pending merge file:"
+echo "   $PENDING_PATH"
+echo
+echo "Repositories:"
+echo
+
+sed 's/^/   /' "$PENDING_PATH"
+
+echo
+
+
+#
+# Sort bottom-to-top.
+#
+# "." has depth zero, so the root repository naturally comes last.
+#
+
+SORTED_PATHS=$(
+    awk '
+
+        NF {
+
+            path = $0
+
+            copy = path
+
+            depth = gsub(/\//, "/", copy)
+
+            #
+            # Force root to the absolute bottom.
+            #
+
+            if (path == ".")
+                depth = -1
+
+            print depth "\t" path
+
+        }
+
+    ' "$PENDING_PATH" |
+    sort -rn -k1,1 |
+    cut -f2-
+)
+
+
+failed=0
+
+
+while IFS= read -r relative_path; do
+
+    if [ -z "$relative_path" ]; then
+
+        continue
+
+    fi
+
+
+    if [ "$relative_path" = "." ]; then
+
+        repository="$ROOT"
+
+    else
+
+        repository="$ROOT/$relative_path"
+
+    fi
+
+
+    echo
+    echo "Next repository:"
+    echo "   $relative_path"
+
+
+    if [ ! -d "$repository" ]; then
+
+        echo
+        print_error "ERROR: Repository directory does not exist:"
+        echo "   $repository"
+
+        failed=1
+
+        break
+
+    fi
+
+
+    if ! merge_repository \
+        "$repository" \
+        "$relative_path"; then
+
+        echo
+        print_error "============================================================"
+        print_error "Merge wizard stopped because of an error."
+        echo
+        echo "Repository:"
+        echo "   $relative_path"
+        echo
+        echo "Remaining pending repositories are still recorded in:"
+        echo "   $PENDING_PATH"
+        print_error "============================================================"
+
+        failed=1
+
+        break
+
+    fi
+
+
+    remove_from_pending_file "$relative_path"
+
+
+    echo
+    echo "Completed:"
+    echo "   $relative_path"
+
+done <<< "$SORTED_PATHS"
+
+
+if [ "$failed" -ne 0 ]; then
+
+    exit 1
+
+fi
+
+
+if [ ! -s "$PENDING_PATH" ]; then
+
+    rm -f "$PENDING_PATH"
+
+fi
+
+
+echo
+print_success "============================================================"
+print_success "All pending merges were completed successfully."
+print_success "============================================================"
+echo
+echo "Run commit again to record any final parent gitlink changes"
+echo "and push the complete repository hierarchy."
+
+
+
