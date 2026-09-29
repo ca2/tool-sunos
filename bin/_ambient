@@ -1,0 +1,43 @@
+
+if [ -z "$__SYSTEM" ]; then
+
+   . $HOME/application/integration/code/.operating_system_summary
+
+   # envbasename=`basename $SHELL`
+
+   # ENV="$HOME/.${envbasename}rc"
+
+   # export ENV
+
+   export __SYSTEM
+   export __SYSTEM_FAMILY
+   export __SYSTEM_BRANCH
+   export __SYSTEM_RELEASE
+   export __SYSTEM_ARCHITECTURE
+   export __SYSTEM_SUDO_INSTALL
+   export __SYSTEM_AMBIENT_RELEASE_ARCHITECTURE
+   export __AMBIENT
+
+   if [ -n "$__PATH_PREFIX" ]; then
+
+      #echo "__PATH_PREFIX is $__PATH_PREFIX"
+
+      PATH=$__PATH_PREFIX:$PATH
+
+      #echo "new PATH is $PATH"
+
+      export PATH
+
+   fi
+
+fi
+
+if [ -z "$SSH_AUTH_SOCK" ]; then
+
+   if [ -f "$HOME/.ssh/id_auth" ]; then
+
+      . $HOME/code/operating_system/tool/bin/defer_ssh_agent
+
+   fi
+
+fi
