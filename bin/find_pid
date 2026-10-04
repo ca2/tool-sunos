@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Resolve a ca2 application's PID in the current desktop session.
+set -u
+
+if [[ ${1:-} == --help || ${1:-} == -h ]]; then
+    printf 'Usage: find_pid APP_ID\nExample: find_pid app-core/ambient\n'
+    exit 0
+fi
+if [[ $# != 1 || -z $1 ]]; then
+    printf 'Usage: find_pid APP_ID\n' >&2
+    exit 2
+fi
+if ! command -v gdbus >/dev/null 2>&1; then
+    printf 'find_pid: gdbus is required (GLib command-line tools).\n' >&2
+    exit 2
+fi
+
+# Match the GTK application ID normalization used by ca2.
+app_id=$1
+bus_name=${app_id//\//.}
+bus_name=${bus_name//_/-}
+
+if ! reply=$(gdbus call --session \
+    --dest org.freedesktop.DBus \
+    --object-path /org/freedesktop/DBus \
+    --method org.freedesktop.DBus.GetConnectionUnixProcessID \
+    "$bus_name" 2>&1); then
+    printf 'find_pid: cannot resolve %s in this desktop session.\n%s\n' "$app_id" "$reply" >&2
+    exit 1
+fi
+
+if [[ $reply =~ ^\(uint32[[:space:]]+([0-9]+),\)$ ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+else
+    printf 'find_pid: unexpected D-Bus response: %s\n' "$reply" >&2
+    exit 1
+fi
