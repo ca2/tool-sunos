@@ -1,93 +1,91 @@
-#!/usr/bin/bash
+#!/bin/sh
+#
+# Patch the user's shell startup files to load the ca2 SunOS environment.
+# This is kept separate from patch_shell, which uses application_build_helper.
 
-cp $HOME/code/operating_system/tool/bin/_distro__desktop_environment_and_release
+SCRIPT_PATH=$0
+case "$SCRIPT_PATH" in
+    */*) ;;
+    *) SCRIPT_PATH=$(command -v "$SCRIPT_PATH" 2>/dev/null) ;;
+esac
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$SCRIPT_PATH")" 2>/dev/null && pwd)
+if [ -z "$SCRIPT_DIR" ]; then
+    echo "patch_shell1: cannot determine script directory" >&2
+    exit 1
+fi
+
+VARIANT_SCRIPT="$SCRIPT_DIR/sunos_variant"
+ENV_SCRIPT="$SCRIPT_DIR/_distro__desktop_environment_and_release"
+
+if [ ! -x "$VARIANT_SCRIPT" ]; then
+    echo "patch_shell1: missing executable $VARIANT_SCRIPT" >&2
+    exit 1
+fi
+
+if [ ! -r "$ENV_SCRIPT" ]; then
+    echo "patch_shell1: missing environment script $ENV_SCRIPT" >&2
+    exit 1
+fi
+
+SYSTEM_VARIANT=$("$VARIANT_SCRIPT") || exit 1
+echo "ca2 SunOS variant: $SYSTEM_VARIANT"
 
 patch_rc_file()
 {
-   
-   RC_FILE=$1
-   
-   if [ ! -f "$RC_FILE" ]; then
+    RC_FILE=$1
 
+    if [ ! -f "$RC_FILE" ]; then
+        touch "$RC_FILE" || {
+            echo "patch_shell1: cannot create $RC_FILE" >&2
+            return 1
+        }
+    fi
 
-      touch $RC_FILE 
+    if grep -Fq "# ca2 SunOS variant environment" "$RC_FILE"; then
+        echo "\"$RC_FILE\" already has the ca2 SunOS environment source."
+        return 0
+    fi
 
+    {
+        echo ""
+        echo "# ca2 SunOS variant environment"
+        printf 'PATH="%s:$HOME/code/operating_system/tool/bin:$HOME/bin:/opt/csw/bin:$PATH"\n' "$SCRIPT_DIR"
+        echo "export PATH"
+        echo 'export GPG_TTY=$(tty)'
+        printf 'CA2_SUNOS_TOOL_BIN="%s"\n' "$SCRIPT_DIR"
+        echo 'export CA2_SUNOS_TOOL_BIN'
+        printf 'if [ -r "%s" ]; then . "%s"; fi\n' "$ENV_SCRIPT" "$ENV_SCRIPT"
+        echo "# end ca2 SunOS variant environment"
+        echo ""
+    } >> "$RC_FILE" || {
+        echo "patch_shell1: failed to update $RC_FILE" >&2
+        return 1
+    }
 
-   fi
-
-   if grep -q "# ca2 patch_shell" "$RC_FILE"; then
-
-
-      echo "\"$RC_FILE\" is already patched."
-
-   else
-
-      echo "" >> $RC_FILE
-      echo "" >> $RC_FILE
-      echo "" >> $RC_FILE
-      echo "" >> $RC_FILE
-      echo "# ca2 patch_shell" >> $RC_FILE
-      echo "" >> $RC_FILE
-      echo "" >> $RC_FILE
-      echo "export GPG_TTY=\$(tty)" >> $RC_FILE
-      echo "" >> $RC_FILE
-      echo "" >> $RC_FILE
-      echo "PATH=\$HOME/code/operating_system/tool/bin:\$HOME/bin:/opt/csw/bin:\$PATH" >> $RC_FILE
-      echo "" >> $RC_FILE
-      echo "" >> $RC_FILE
-      echo "export PATH" >> $RC_FILE
-      echo "" >> $RC_FILE
-      echo "" >> $RC_FILE
-      echo ". _distro__desktop_environment_and_release" >> $RC_FILE
-      echo "" >> $RC_FILE
-      echo "" >> $RC_FILE
-      echo "# end ca2 patch_shell + 4 new lines" >> $RC_FILE
-      echo "" >> $RC_FILE
-      echo "" >> $RC_FILE
-      echo "" >> $RC_FILE
-      echo "" >> $RC_FILE
-
-      echo "Successfully patched \"$RC_FILE\""
-
-
-   fi
- 
+    echo "Successfully patched \"$RC_FILE\""
 }
-
 
 patch_profile()
 {
-   
-   patch_rc_file "$HOME/.profile"
-   
+    patch_rc_file "$HOME/.profile"
 }
-
 
 patch_bashrc()
 {
-   
-   patch_rc_file "$HOME/.bashrc"
-   
+    patch_rc_file "$HOME/.bashrc"
 }
-
 
 patch_shrc()
 {
-
-   patch_rc_file "$HOME/.shrc"
-
+    patch_rc_file "$HOME/.shrc"
 }
 
+patch_profile || exit 1
+patch_bashrc || exit 1
+patch_shrc || exit 1
 
-. $HOME/code/operating_system/tool/bin/_distro__desktop_environment_and_release
-
-
-patch_profile
-patch_bashrc
-
-
-
-
-
-
-
+echo ""
+echo "Shell startup files now source the ca2 SunOS environment."
+echo "To apply it to this shell immediately, run:"
+echo ". \"$ENV_SCRIPT\""

@@ -1,25 +1,133 @@
-#!/bin/bash
+#!/bin/sh
+#
+# ca2 SunOS/illumos environment identification.
+# Intended to be sourced by a shell startup file.
+#
+# Sets both the current __SYSTEM name (solaris, openindiana, etc.) and the
+# legacy ca2 operating-system variables consumed by existing build scripts.
 
+_CA2_SUNOS_TOOL_BIN=${CA2_SUNOS_TOOL_BIN:-"$HOME/code/operating_system/tool-sunos/bin"}
+_CA2_SUNOS_VARIANT_SCRIPT="$_CA2_SUNOS_TOOL_BIN/sunos_variant"
 
-__OPERATING_SYSTEM="freebsd"
-__OPERATING_SYSTEM_FAMILY="bsd"
-__OPERATING_SYSTEM_BRANCH="gnome"
-__OPERATING_SYSTEM_RELEASE="14"
-__SYSTEM_DESKTOP_ENVIRONMENT="gnome"
-__SYSTEM_SLASHED_OPERATING_SYSTEM="freebsd/gnome/14"
-__SYSTEM_UNDERSCORE_OPERATING_SYSTEM="freebsd_gnome_14"
+if [ ! -x "$_CA2_SUNOS_VARIANT_SCRIPT" ]; then
+    echo "_distro__desktop_environment_and_release: cannot execute $_CA2_SUNOS_VARIANT_SCRIPT" >&2
+    return 1 2>/dev/null
+    exit 1
+fi
+
+__SYSTEM_VARIANT=$("$_CA2_SUNOS_VARIANT_SCRIPT")
+if [ $? -ne 0 ] || [ -z "$__SYSTEM_VARIANT" ]; then
+    echo "_distro__desktop_environment_and_release: could not determine SunOS variant" >&2
+    return 1 2>/dev/null
+    exit 1
+fi
+
+# The variant coordinator returns names such as solaris-11.4 and
+# openindiana-2026.04. Keep distro identity separate from the build variant.
+case "$__SYSTEM_VARIANT" in
+    solaris-*)
+        __SYSTEM=solaris
+        __SYSTEM_DISTRO_FAMILY=solaris
+        __SYSTEM_DISTRO_RELEASE=${__SYSTEM_VARIANT#solaris-}
+        ;;
+    openindiana-*)
+        __SYSTEM=openindiana
+        __SYSTEM_DISTRO_FAMILY=illumos
+        __SYSTEM_DISTRO_RELEASE=${__SYSTEM_VARIANT#openindiana-}
+        ;;
+    omnios-*)
+        __SYSTEM=omnios
+        __SYSTEM_DISTRO_FAMILY=illumos
+        __SYSTEM_DISTRO_RELEASE=${__SYSTEM_VARIANT#omnios-}
+        ;;
+    smartos-*)
+        __SYSTEM=smartos
+        __SYSTEM_DISTRO_FAMILY=illumos
+        __SYSTEM_DISTRO_RELEASE=${__SYSTEM_VARIANT#smartos-}
+        ;;
+    tribblix-*)
+        __SYSTEM=tribblix
+        __SYSTEM_DISTRO_FAMILY=illumos
+        __SYSTEM_DISTRO_RELEASE=${__SYSTEM_VARIANT#tribblix-}
+        ;;
+    dilos-*)
+        __SYSTEM=dilos
+        __SYSTEM_DISTRO_FAMILY=illumos
+        __SYSTEM_DISTRO_RELEASE=${__SYSTEM_VARIANT#dilos-}
+        ;;
+    *)
+        case "$__SYSTEM_VARIANT" in
+            *-*)
+                __SYSTEM=${__SYSTEM_VARIANT%%-*}
+                __SYSTEM_DISTRO_RELEASE=${__SYSTEM_VARIANT#*-}
+                ;;
+            *)
+                __SYSTEM=$__SYSTEM_VARIANT
+                __SYSTEM_DISTRO_RELEASE=unknown
+                ;;
+        esac
+        __SYSTEM_DISTRO_FAMILY=sunos
+        ;;
+esac
+
+# Detect the desktop environment. XDG_CURRENT_DESKTOP can contain a
+# colon-separated value such as GNOME:GNOME-Classic.
+_CA2_DESKTOP=$(printf '%s %s' "${XDG_CURRENT_DESKTOP:-}" "${DESKTOP_SESSION:-}" |
+    tr '[:upper:]' '[:lower:]')
+
+case "$_CA2_DESKTOP" in
+    *gnome*) __SYSTEM_DESKTOP_ENVIRONMENT=gnome ;;
+    *kde*|*plasma*) __SYSTEM_DESKTOP_ENVIRONMENT=kde ;;
+    *xfce*) __SYSTEM_DESKTOP_ENVIRONMENT=xfce ;;
+    *lxqt*) __SYSTEM_DESKTOP_ENVIRONMENT=lxqt ;;
+    *lxde*) __SYSTEM_DESKTOP_ENVIRONMENT=lxde ;;
+    *cinnamon*) __SYSTEM_DESKTOP_ENVIRONMENT=cinnamon ;;
+    *mate*) __SYSTEM_DESKTOP_ENVIRONMENT=mate ;;
+    *enlightenment*) __SYSTEM_DESKTOP_ENVIRONMENT=enlightenment ;;
+    *)
+        __SYSTEM_DESKTOP_ENVIRONMENT=unknown
+        ;;
+esac
+
+# Keep the current and legacy variable names in sync.
+__SYSTEM_DISTRO=$__SYSTEM
+__SYSTEM_DISTRO_BRANCH=$__SYSTEM_DESKTOP_ENVIRONMENT
+__OPERATING_SYSTEM=$__SYSTEM
+__OPERATING_SYSTEM_FAMILY=sunos
+__OPERATING_SYSTEM_BRANCH=$__SYSTEM_DESKTOP_ENVIRONMENT
+__OPERATING_SYSTEM_RELEASE=$__SYSTEM_DISTRO_RELEASE
+
+__SYSTEM_SLASHED_OPERATING_SYSTEM="$__SYSTEM/$__SYSTEM_DESKTOP_ENVIRONMENT/$__SYSTEM_DISTRO_RELEASE"
+__SYSTEM_UNDERSCORE_OPERATING_SYSTEM=$(printf '%s' "$__SYSTEM_SLASHED_OPERATING_SYSTEM" | tr '/' '_')
 __SYSTEM_SUDO_INSTALL="sudo pkg install"
 
+if command -v gnome-terminal >/dev/null 2>&1; then
+    __SYSTEM_TERMINAL=gnome-terminal
+elif command -v konsole >/dev/null 2>&1; then
+    __SYSTEM_TERMINAL=konsole
+elif command -v xfce4-terminal >/dev/null 2>&1; then
+    __SYSTEM_TERMINAL=xfce4-terminal
+elif command -v xterm >/dev/null 2>&1; then
+    __SYSTEM_TERMINAL=xterm
+else
+    __SYSTEM_TERMINAL=
+fi
 
-export __OPERATING_SYSTEM
-export __OPERATING_SYSTEM_FAMILY
-export __OPERATING_SYSTEM_BRANCH
-export __OPERATING_SYSTEM_RELEASE
+export __SYSTEM
+export __SYSTEM_VARIANT
+export __SYSTEM_DISTRO
+export __SYSTEM_DISTRO_FAMILY
+export __SYSTEM_DISTRO_BRANCH
+export __SYSTEM_DISTRO_RELEASE
 export __SYSTEM_DESKTOP_ENVIRONMENT
 export __SYSTEM_SLASHED_OPERATING_SYSTEM
 export __SYSTEM_UNDERSCORE_OPERATING_SYSTEM
 export __SYSTEM_SUDO_INSTALL
 export __SYSTEM_TERMINAL
 
+export __OPERATING_SYSTEM
+export __OPERATING_SYSTEM_FAMILY
+export __OPERATING_SYSTEM_BRANCH
+export __OPERATING_SYSTEM_RELEASE
 
-
+unset _CA2_SUNOS_TOOL_BIN _CA2_SUNOS_VARIANT_SCRIPT _CA2_DESKTOP
