@@ -42,7 +42,7 @@ patch_rc_file()
         }
     fi
 
-    if grep -Fq "# ca2 SunOS variant environment" "$RC_FILE"; then
+    if grep "# ca2 SunOS variant environment" "$RC_FILE" >/dev/null 2>&1; then
         echo "\"$RC_FILE\" already has the ca2 SunOS environment source."
         return 0
     fi

@@ -16,8 +16,8 @@ remove_ca2_block()
         return 0
     fi
 
-    if ! grep -F -e "# ca2 patch_shell" \
-                -e "# ca2 SunOS variant environment" "$RC_FILE" >/dev/null 2>&1; then
+    if ! grep "# ca2 patch_shell" "$RC_FILE" >/dev/null 2>&1 &&
+       ! grep "# ca2 SunOS variant environment" "$RC_FILE" >/dev/null 2>&1; then
         echo "\"$RC_FILE\" has no recognized ca2 patch_shell1 block."
         return 0
     fi
