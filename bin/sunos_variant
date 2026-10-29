@@ -1,0 +1,216 @@
+#!/bin/sh
+#
+# ca2 SunOS build-variant coordinator.
+#
+# Prints one stable, lowercase variant identifier to stdout. Use this value
+# as a directory component when selecting host executables, for example:
+#   tool/bin/solaris-11.4/i86pc/application_build_helper
+#   tool/bin/openindiana-2026.04/i86pc/application_build_helper
+#
+# Override detection when needed:
+#   CA2_SUNOS_VARIANT=my-custom-variant ./sunos_variant
+#
+# Add explicit cases below for new SunOS/illumos distributions whose binaries
+# need a separate build. Do not use uname -m alone: it does not distinguish
+# Oracle Solaris from OpenIndiana or other illumos distributions.
+
+fail()
+{
+    echo "sunos_variant: $*" >&2
+    exit 1
+}
+
+usage()
+{
+    cat <<'EOF'
+Usage: sunos_variant
+
+Print a platform variant for ca2 SunOS-family host builds.
+
+Examples:
+  solaris-11.4
+  openindiana-2026.04
+
+Set CA2_SUNOS_VARIANT to override automatic detection.
+EOF
+}
+
+case "${1-}" in
+    -h|--help)
+        usage
+        exit 0
+        ;;
+    "")
+        ;;
+    *)
+        fail "unexpected argument: $1 (try --help)"
+        ;;
+esac
+
+OS_NAME=$(uname -s 2>/dev/null) || fail "cannot determine operating system"
+[ "$OS_NAME" = "SunOS" ] ||
+    fail "expected SunOS, detected '$OS_NAME'"
+
+# An explicit override is useful for custom distributions and test systems.
+if [ -n "${CA2_SUNOS_VARIANT:-}" ]; then
+    VARIANT=$(printf '%s' "$CA2_SUNOS_VARIANT" | tr '[:upper:]' '[:lower:]')
+    case "$VARIANT" in
+        *[!a-z0-9._-]*|'')
+            fail "CA2_SUNOS_VARIANT must contain only letters, digits, '.', '_' or '-'"
+            ;;
+    esac
+    printf '%s\n' "$VARIANT"
+    exit 0
+fi
+
+if [ -r /etc/release ]; then
+    RELEASE_TEXT=$(cat /etc/release)
+elif [ -r /etc/product ]; then
+    RELEASE_TEXT=$(cat /etc/product)
+else
+    RELEASE_TEXT=
+fi
+
+RELEASE_LOWER=$(printf '%s\n' "$RELEASE_TEXT" | tr '[:upper:]' '[:lower:]')
+FIRST_LINE=$(printf '%s\n' "$RELEASE_LOWER" | sed -n '1p')
+
+# Turn a release label into a safe path component.
+slugify()
+{
+    printf '%s\n' "$1" |
+        tr '[:upper:]' '[:lower:]' |
+        sed 's/[^a-z0-9][^a-z0-9]*/-/g; s/^-//; s/-$//' |
+        cut -c 1-64
+}
+
+# Return the text after the first word of a release line, as a slug.
+release_tail()
+{
+    tail_text=$(printf '%s\n' "$1" |
+        awk '{ for (i = 2; i <= NF; i++) { if (i > 2) printf " "; printf "%s", $i } }')
+    slugify "$tail_text"
+}
+
+# Oracle Solaris: deliberately group SRUs under the compatible 11.4 line,
+# rather than embedding the SRU number in the variant.
+case "$RELEASE_LOWER" in
+    *"oracle solaris"*|*"solaris 10"*|*"solaris 11"*)
+        SOLARIS_VERSION=$(printf '%s\n' "$RELEASE_TEXT" |
+            awk 'toupper($0) ~ /SOLARIS/ {
+                for (i = 1; i <= NF; i++) {
+                    if ($i ~ /^[0-9]+(\.[0-9]+)*$/) {
+                        n = split($i, p, ".");
+                        if (p[1] == "11" && n > 1)
+                            print p[1] "." p[2];
+                        else
+                            print p[1];
+                        exit;
+                    }
+                }
+            }')
+        if [ -n "$SOLARIS_VERSION" ]; then
+            printf 'solaris-%s\n' "$SOLARIS_VERSION"
+        else
+            echo "sunos_variant: Oracle Solaris detected, but its release version could not be parsed" >&2
+            printf 'solaris-unknown\n'
+        fi
+        exit 0
+        ;;
+esac
+
+# OpenIndiana uses a YYYY.MM release identifier, e.g. 2026.04.
+case "$RELEASE_LOWER" in
+    *openindiana*)
+        OI_VERSION=$(printf '%s\n' "$RELEASE_TEXT" |
+            awk '{
+                for (i = 1; i <= NF; i++) {
+                    if ($i ~ /^[12][0-9][0-9][0-9]\.[0-9][0-9]$/) {
+                        print $i;
+                        exit;
+                    }
+                }
+            }')
+        if [ -n "$OI_VERSION" ]; then
+            printf 'openindiana-%s\n' "$OI_VERSION"
+        else
+            OI_TAIL=$(release_tail "$FIRST_LINE")
+            if [ -n "$OI_TAIL" ]; then
+                printf 'openindiana-%s\n' "$OI_TAIL"
+            else
+                echo "sunos_variant: OpenIndiana detected, but its release version could not be parsed" >&2
+                printf 'openindiana-unknown\n'
+            fi
+        fi
+        exit 0
+        ;;
+esac
+
+# OmniOS release identifiers are commonly written as r1510xx.
+case "$RELEASE_LOWER" in
+    *omnios*)
+        OMNIOS_VERSION=$(printf '%s\n' "$RELEASE_LOWER" |
+            awk '{
+                for (i = 1; i <= NF; i++) {
+                    if ($i ~ /^r[0-9]+$/) {
+                        print $i;
+                        exit;
+                    }
+                }
+            }')
+        if [ -n "$OMNIOS_VERSION" ]; then
+            printf 'omnios-%s\n' "$OMNIOS_VERSION"
+        else
+            OMNIOS_TAIL=$(release_tail "$FIRST_LINE")
+            printf 'omnios-%s\n' "${OMNIOS_TAIL:-unknown}"
+        fi
+        exit 0
+        ;;
+esac
+
+# Other named illumos distributions. Their release text is kept in the
+# identifier so that distinct releases do not silently share one binary dir.
+for DISTRO in smartos tribblix dilos; do
+    case "$RELEASE_LOWER" in
+        *"$DISTRO"*)
+            DISTRO_TAIL=$(release_tail "$FIRST_LINE")
+            if [ -n "$DISTRO_TAIL" ]; then
+                printf '%s-%s\n' "$DISTRO" "$DISTRO_TAIL"
+            else
+                DISTRO_VERSION=$(slugify "$(uname -v 2>/dev/null)")
+                printf '%s-%s\n' "$DISTRO" "${DISTRO_VERSION:-unknown}"
+            fi
+            exit 0
+            ;;
+    esac
+done
+
+# Generic illumos distribution. Preserve the release label instead of
+# collapsing all illumos variants into one architecture-only output folder.
+case "$RELEASE_LOWER" in
+    *illumos*)
+        RELEASE_SLUG=$(slugify "$FIRST_LINE")
+        if [ -n "$RELEASE_SLUG" ]; then
+            printf '%s\n' "$RELEASE_SLUG"
+        else
+            printf 'illumos-unknown\n'
+        fi
+        exit 0
+        ;;
+esac
+
+# Unknown SunOS variant: make the fallback as specific as the available
+# release metadata. This avoids treating every unidentified system as equal.
+RELEASE_SLUG=$(slugify "$FIRST_LINE")
+if [ -n "$RELEASE_SLUG" ]; then
+    echo "sunos_variant: unrecognized SunOS distribution; using /etc/release label '$FIRST_LINE'" >&2
+    printf 'sunos-%s\n' "$RELEASE_SLUG"
+    exit 0
+fi
+
+KERNEL_RELEASE=$(slugify "$(uname -r 2>/dev/null)")
+KERNEL_VERSION=$(slugify "$(uname -v 2>/dev/null)")
+[ -n "$KERNEL_RELEASE" ] || KERNEL_RELEASE=unknown
+[ -n "$KERNEL_VERSION" ] || KERNEL_VERSION=unknown
+
+echo "sunos_variant: no usable /etc/release metadata; using kernel identity" >&2
+printf 'sunos-%s-%s\n' "$KERNEL_RELEASE" "$KERNEL_VERSION"
