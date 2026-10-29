@@ -1,0 +1,93 @@
+#!/bin/sh
+#
+# Undo the shell-startup changes made by patch_shell1.
+#
+# Removes both the earlier "# ca2 patch_shell" block and the newer
+# "# ca2 SunOS variant environment" block, if present. Other user content
+# is preserved. The current application_build_helper-based unpatch_shell
+# remains separate and unchanged.
+
+remove_ca2_block()
+{
+    RC_FILE=$1
+
+    if [ ! -f "$RC_FILE" ]; then
+        echo "Skipping missing $RC_FILE"
+        return 0
+    fi
+
+    if ! grep -F -e "# ca2 patch_shell" \
+                -e "# ca2 SunOS variant environment" "$RC_FILE" >/dev/null 2>&1; then
+        echo "\"$RC_FILE\" has no recognized ca2 patch_shell1 block."
+        return 0
+    fi
+
+    TMP_FILE="$RC_FILE.ca2-unpatch.$$"
+    if [ -e "$TMP_FILE" ]; then
+        echo "unpatch_shell1: temporary file already exists: $TMP_FILE" >&2
+        return 1
+    fi
+
+    # Copy metadata first, then overwrite the copy's contents. This keeps the
+    # original file's mode and ownership when possible.
+    cp -p "$RC_FILE" "$TMP_FILE" || {
+        echo "unpatch_shell1: cannot copy $RC_FILE" >&2
+        return 1
+    }
+
+    awk '
+    BEGIN {
+        skipping = 0
+        found = 0
+        malformed = 0
+    }
+
+    $0 == "# ca2 patch_shell" ||
+    $0 == "# ca2 SunOS variant environment" {
+        if (skipping) {
+            malformed = 1
+            next
+        }
+        skipping = 1
+        found = 1
+        next
+    }
+
+    skipping {
+        if ($0 == "# end ca2 patch_shell + 4 new lines" ||
+            $0 == "# end ca2 SunOS variant environment") {
+            skipping = 0
+        }
+        next
+    }
+
+    { print }
+
+    END {
+        if (skipping || malformed)
+            exit 2
+    }
+    ' "$RC_FILE" > "$TMP_FILE"
+    AWK_STATUS=$?
+
+    if [ "$AWK_STATUS" -ne 0 ]; then
+        rm -f "$TMP_FILE"
+        echo "unpatch_shell1: found an incomplete or malformed ca2 block in $RC_FILE; left it unchanged." >&2
+        return 1
+    fi
+
+    if mv "$TMP_FILE" "$RC_FILE"; then
+        echo "Removed ca2 patch_shell1 configuration from \"$RC_FILE\"."
+    else
+        rm -f "$TMP_FILE"
+        echo "unpatch_shell1: could not replace $RC_FILE" >&2
+        return 1
+    fi
+}
+
+remove_ca2_block "$HOME/.profile" || exit 1
+remove_ca2_block "$HOME/.bashrc" || exit 1
+remove_ca2_block "$HOME/.shrc" || exit 1
+
+echo ""
+echo "Finished. Open a new shell (or log out and back in) to discard the old environment."
