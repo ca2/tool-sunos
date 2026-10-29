@@ -29,7 +29,17 @@ if [ ! -r "$ENV_SCRIPT" ]; then
 fi
 
 SYSTEM_VARIANT=$("$VARIANT_SCRIPT") || exit 1
+if [ -z "$SYSTEM_VARIANT" ]; then
+    echo "patch_shell1: sunos_variant returned an empty value" >&2
+    exit 1
+fi
+ARCHITECTURE=$(uname -m) || exit 1
+if [ -z "$ARCHITECTURE" ]; then
+    echo "patch_shell1: uname -m returned an empty architecture" >&2
+    exit 1
+fi
 echo "ca2 SunOS variant: $SYSTEM_VARIANT"
+echo "ca2 SunOS architecture: $ARCHITECTURE"
 
 patch_rc_file()
 {
@@ -50,7 +60,7 @@ patch_rc_file()
     {
         echo ""
         echo "# ca2 SunOS variant environment"
-        printf 'PATH="%s:$HOME/code/operating_system/tool/bin:$HOME/bin:/opt/csw/bin:$PATH"\n' "$SCRIPT_DIR"
+        printf 'PATH="%s/%s/%s:%s:$HOME/bin:/opt/csw/bin:$PATH"\n' "$SCRIPT_DIR" "$SYSTEM_VARIANT" "$ARCHITECTURE" "$SCRIPT_DIR"
         echo "export PATH"
         echo 'export GPG_TTY=$(tty)'
         printf 'CA2_SUNOS_TOOL_BIN="%s"\n' "$SCRIPT_DIR"
