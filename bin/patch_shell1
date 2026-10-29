@@ -56,6 +56,8 @@ patch_rc_file()
         printf 'CA2_SUNOS_TOOL_BIN="%s"\n' "$SCRIPT_DIR"
         echo 'export CA2_SUNOS_TOOL_BIN'
         printf 'if [ -r "%s" ]; then . "%s"; fi\n' "$ENV_SCRIPT" "$ENV_SCRIPT"
+        # _distro__desktop_environment_and_release configures Solaris's
+        # /usr/lib/amd64/pkgconfig for GTK4 and other native libraries.
         echo "# end ca2 SunOS variant environment"
         echo ""
     } >> "$RC_FILE" || {
@@ -87,5 +89,6 @@ patch_shrc || exit 1
 
 echo ""
 echo "Shell startup files now source the ca2 SunOS environment."
+echo "On Solaris amd64, that environment also includes /usr/lib/amd64/pkgconfig."
 echo "To apply it to this shell immediately, run:"
 echo ". \"$ENV_SCRIPT\""
