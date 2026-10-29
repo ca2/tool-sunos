@@ -93,9 +93,9 @@ esac
 # which may be absent from pkg-config's compiled-in default search path.
 # Check the directory rather than applying Linux-style paths globally.
 if [ -d /usr/lib/amd64/pkgconfig ]; then
-    case ":\${PKG_CONFIG_PATH:-}:" in
+    case ":${PKG_CONFIG_PATH:-}:" in
         *:/usr/lib/amd64/pkgconfig:*) ;;
-        *) PKG_CONFIG_PATH="/usr/lib/amd64/pkgconfig\${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" ;;
+        *) PKG_CONFIG_PATH="/usr/lib/amd64/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" ;;
     esac
     export PKG_CONFIG_PATH
 fi
