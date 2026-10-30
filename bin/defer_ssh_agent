@@ -1,0 +1,31 @@
+#!/bin/sh
+
+# Source this file so the calling shell receives the agent environment.
+defer_ssh_agent_is_available()
+{
+   if ssh-add -l >/dev/null 2>&1; then
+      return 0
+   else
+      # An empty but reachable agent returns 1; an unavailable agent returns 2.
+      [ "$?" -eq 1 ]
+   fi
+}
+
+if command -v ssh-agent >/dev/null 2>&1 && command -v ssh-add >/dev/null 2>&1; then
+   if ! defer_ssh_agent_is_available; then
+      if defer_ssh_agent_output=$(ssh-agent -s); then
+         eval "$defer_ssh_agent_output" >/dev/null
+      else
+         printf '%s\n' 'Failed to start ssh-agent' >&2
+      fi
+   fi
+
+   if defer_ssh_agent_is_available && [ -f "$HOME/.ssh/id_auth" ]; then
+      ssh-add "$HOME/.ssh/id_auth" >/dev/null
+   fi
+else
+   printf '%s\n' 'ssh-agent and ssh-add are required to set up the SSH agent' >&2
+fi
+
+unset defer_ssh_agent_output
+unset -f defer_ssh_agent_is_available
