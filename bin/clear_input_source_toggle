@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+
+
+gsettings set org.gnome.desktop.wm.keybindings switch-input-source "[]"
+
+gsettings set org.gnome.desktop.wm.keybindings switch-input-source-backward "[]"
+
+
+
+
