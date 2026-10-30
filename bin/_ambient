@@ -20,8 +20,6 @@ if [ -n "$__PATH_PREFIX" ]; then
    export PATH
 fi
 
-if [ -z "$SSH_AUTH_SOCK" ] && [ -f "$HOME/.ssh/id_auth" ]; then
-   if [ -r "$HOME/code/operating_system/tool/bin/defer_ssh_agent" ]; then
-      . "$HOME/code/operating_system/tool/bin/defer_ssh_agent"
-   fi
+if [ -r "$HOME/code/operating_system/tool/bin/defer_ssh_agent" ]; then
+   . "$HOME/code/operating_system/tool/bin/defer_ssh_agent"
 fi

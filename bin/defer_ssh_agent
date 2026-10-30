@@ -1,31 +1,100 @@
 #!/bin/sh
 
-# Source this file so the calling shell receives the agent environment.
-defer_ssh_agent_is_available()
+# Source this file. Inherited/forwarded agents take precedence over the shared
+# per-user agent. Never start agents or request passphrases in build/SSH shells.
+defer_ssh_agent_available()
 {
-   if ssh-add -l >/dev/null 2>&1; then
+   if SSH_AUTH_SOCK="$1" ssh-add -l >/dev/null 2>&1; then
       return 0
    else
-      # An empty but reachable agent returns 1; an unavailable agent returns 2.
+      # 1 means reachable but empty; 2 means unavailable.
       [ "$?" -eq 1 ]
    fi
 }
 
-if command -v ssh-agent >/dev/null 2>&1 && command -v ssh-add >/dev/null 2>&1; then
-   if ! defer_ssh_agent_is_available; then
-      if defer_ssh_agent_output=$(ssh-agent -s); then
-         eval "$defer_ssh_agent_output" >/dev/null
-      else
-         printf '%s\n' 'Failed to start ssh-agent' >&2
+defer_ssh_agent_socket()
+(
+   if [ -n "${SSH_AUTH_SOCK-}" ] && defer_ssh_agent_available "$SSH_AUTH_SOCK"; then
+      printf '%s\n' "$SSH_AUTH_SOCK"
+      exit 0
+   fi
+
+   ca2_agent_dir=$HOME/.cache/ca2/ssh-agent
+   ca2_agent_file=$ca2_agent_dir/socket
+   # The cache contains data, never shell commands. Do not source or eval it.
+   if [ -r "$ca2_agent_file" ] && IFS= read -r ca2_agent_socket < "$ca2_agent_file"; then
+      if [ -n "$ca2_agent_socket" ] && defer_ssh_agent_available "$ca2_agent_socket"; then
+         printf '%s\n' "$ca2_agent_socket"
+         exit 0
       fi
    fi
 
-   if defer_ssh_agent_is_available && [ -f "$HOME/.ssh/id_auth" ]; then
-      ssh-add "$HOME/.ssh/id_auth" >/dev/null
+   [ "$1" = interactive ] || exit 1
+   command -v ssh-agent >/dev/null 2>&1 || exit 1
+   umask 077
+   [ ! -L "$HOME/.cache" ] && [ ! -L "$HOME/.cache/ca2" ] &&
+      [ ! -L "$ca2_agent_dir" ] || exit 1
+   mkdir -p "$ca2_agent_dir" || exit 1
+   chmod 700 "$ca2_agent_dir" || exit 1
+
+   # mkdir is atomic on Solaris too. Bound the wait so a leftover lock cannot
+   # hang a terminal. A failed attempt leaves the shell usable; it never starts
+   # an unlocked competing agent. Normal exits and signals remove our lock.
+   ca2_agent_attempt=0
+   until mkdir "$ca2_agent_dir/lock" 2>/dev/null; do
+      ca2_agent_attempt=$((ca2_agent_attempt + 1))
+      [ "$ca2_agent_attempt" -lt 5 ] || exit 1
+      sleep 1
+   done
+   trap 'rm -f "$ca2_agent_dir/lock/socket"; rmdir "$ca2_agent_dir/lock" 2>/dev/null' 0
+   trap 'exit 1' 1 2 3 15
+
+   # Another shell may have published its agent while we waited for the lock.
+   if [ -r "$ca2_agent_file" ] && IFS= read -r ca2_agent_socket < "$ca2_agent_file"; then
+      if [ -n "$ca2_agent_socket" ] && defer_ssh_agent_available "$ca2_agent_socket"; then
+         printf '%s\n' "$ca2_agent_socket"
+         exit 0
+      fi
    fi
-else
-   printf '%s\n' 'ssh-agent and ssh-add are required to set up the SSH agent' >&2
+
+   ca2_agent_output=$(ssh-agent -s) || exit 1
+   # Only evaluate output directly from ssh-agent, never cached file content.
+   eval "$ca2_agent_output" >/dev/null
+   if ! defer_ssh_agent_available "$SSH_AUTH_SOCK" ||
+      ! printf '%s\n' "$SSH_AUTH_SOCK" > "$ca2_agent_dir/lock/socket" ||
+      ! mv -f "$ca2_agent_dir/lock/socket" "$ca2_agent_file"; then
+      ssh-agent -k >/dev/null 2>&1
+      exit 1
+   fi
+   printf '%s\n' "$SSH_AUTH_SOCK"
+)
+
+ca2_agent_mode=noninteractive
+case $- in
+   *i*) if [ -t 0 ] && [ -t 2 ]; then ca2_agent_mode=interactive; fi ;;
+esac
+
+if command -v ssh-add >/dev/null 2>&1; then
+   if ca2_agent_socket=$(defer_ssh_agent_socket "$ca2_agent_mode"); then
+      if [ "${SSH_AUTH_SOCK-}" != "$ca2_agent_socket" ]; then
+         unset SSH_AGENT_PID
+      fi
+      SSH_AUTH_SOCK=$ca2_agent_socket
+      export SSH_AUTH_SOCK
+
+      # Load the default key only for an empty agent in an interactive terminal.
+      # An agent with identities is already ready; avoid repeated prompts.
+      if [ "$ca2_agent_mode" = interactive ] && [ -f "$HOME/.ssh/id_auth" ]; then
+         if ssh-add -l >/dev/null 2>&1; then
+            :
+         else
+            if [ "$?" -eq 1 ]; then
+               ssh-add "$HOME/.ssh/id_auth" >/dev/null
+            fi
+         fi
+      fi
+   fi
 fi
 
-unset defer_ssh_agent_output
-unset -f defer_ssh_agent_is_available
+unset ca2_agent_mode ca2_agent_socket
+unset -f defer_ssh_agent_available defer_ssh_agent_socket
