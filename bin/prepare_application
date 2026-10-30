@@ -8,7 +8,7 @@ APP_NAME=$2
 
 APP_DIR=$BASE_DIR/source/$ROOT_DIR/$APP_NAME   
 
-application_build_helper "$APP_DIR"
+exec sh "$HOME/code/operating_system/tool/bin/run_application_build_helper" "$APP_DIR"
 
 
 
