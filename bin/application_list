@@ -8,7 +8,7 @@
 #find . -name application.txt -print > $APPLICATION_LIST_FILE_PATH
 
 
-application_build_helper --application-list
+exec sh "$HOME/code/operating_system/tool/bin/run_application_build_helper" --application-list
 
 
 

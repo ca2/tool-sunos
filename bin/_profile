@@ -1,11 +1,7 @@
-
-. $HOME/application/integration/code/.operating_system_summary
-
-# envbasename=`basename $SHELL`
-
-# ENV="$HOME/.${envbasename}rc"
-
-# export ENV
+# Refresh all fields even when a parent shell has already exported __SYSTEM.
+if [ -r "$HOME/application/integration/code/.operating_system_summary" ]; then
+   . "$HOME/application/integration/code/.operating_system_summary"
+fi
 
 export __SYSTEM
 export __SYSTEM_FAMILY
@@ -17,13 +13,9 @@ export __SYSTEM_AMBIENT_RELEASE_ARCHITECTURE
 export __AMBIENT
 
 if [ -n "$__PATH_PREFIX" ]; then
-
-   #echo "__PATH_PREFIX is $__PATH_PREFIX"
-
-   PATH=$__PATH_PREFIX:$PATH
-
-   #echo "new PATH is $PATH"
-
+   case ":$PATH:" in
+      *":$__PATH_PREFIX:"*) ;;
+      *) PATH="$__PATH_PREFIX:$PATH" ;;
+   esac
    export PATH
-
 fi

@@ -2,7 +2,7 @@
 
 
 
-application_build_helper --package
+exec sh "$HOME/code/operating_system/tool/bin/run_application_build_helper" --package
 
 
 

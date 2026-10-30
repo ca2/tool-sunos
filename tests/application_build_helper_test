@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+export HOME="$WORK/home with spaces"
+TOOL_BIN="$HOME/code/operating_system/tool/bin"
+mkdir -p "$TOOL_BIN/solaris-11.4/i86pc" "$WORK/mock" "$WORK/project"
+cp "$SCRIPT_ROOT/bin/sunos_variant" "$TOOL_BIN/sunos_variant"
+cp "$SCRIPT_ROOT/bin/run_application_build_helper" "$TOOL_BIN/run_application_build_helper"
+chmod +x "$TOOL_BIN/sunos_variant"
+cat > "$WORK/mock/uname" <<'UNAME'
+#!/bin/sh
+case "$1" in
+   -s) printf '%s\n' SunOS ;;
+   -m) printf '%s\n' i86pc ;;
+   *) exit 1 ;;
+esac
+UNAME
+chmod +x "$WORK/mock/uname"
+export PATH="$WORK/mock:$PATH"
+export CA2_SUNOS_VARIANT=Solaris-11.4
+
+# The real detector must work before application_build_helper exists.
+test "$("$TOOL_BIN/sunos_variant")" = solaris-11.4
+cat > "$TOOL_BIN/solaris-11.4/i86pc/application_build_helper" <<'HELPER'
+#!/bin/sh
+printf '%s\n' "$@" > "$HOME/helper_arguments"
+exit "${CA2_TEST_HELPER_EXIT:-0}"
+HELPER
+chmod +x "$TOOL_BIN/solaris-11.4/i86pc/application_build_helper"
+# Catch accidental use of the architecture-only directory or PATH.
+mkdir -p "$TOOL_BIN/i86pc"
+printf '#!/bin/sh\nexit 99\n' > "$TOOL_BIN/i86pc/application_build_helper"
+printf '#!/bin/sh\nexit 98\n' > "$WORK/mock/application_build_helper"
+chmod +x "$TOOL_BIN/i86pc/application_build_helper" "$WORK/mock/application_build_helper"
+cd "$WORK/project"
+check_arguments()
+{
+   printf '%s\n' "$@" > "$WORK/expected"
+   cmp "$HOME/helper_arguments" "$WORK/expected"
+}
+for action in patch unpatch; do
+   sh "$SCRIPT_ROOT/bin/${action}_shell" 'argument with spaces'
+   check_arguments "--${action}-shell" 'argument with spaces'
+done
+for pair in 'application_list:--application-list' 'package:--package' 'prepare_applications:--prepare-applications'; do
+   sh "$SCRIPT_ROOT/bin/${pair%%:*}"
+   check_arguments "${pair#*:}"
+done
+bash "$SCRIPT_ROOT/bin/prepare_application" root 'app with spaces'
+check_arguments "$WORK/project/source/root/app with spaces"
+
+# Exercise the legacy bulk preparation loop with an already prepared fixture.
+mkdir -p source/root/app/operating-system/test source/root/app/.link_object
+printf 'fixture\n' > source/root/app/operating-system/test/_root_app.cpp
+printf 'source/root/app/application.txt\n' > application_list.txt
+export __SYSTEM_SLASHED_OPERATING_SYSTEM=test
+bash "$SCRIPT_ROOT/bin/prepare_applications1" >/dev/null
+check_arguments source/root/app
+
+# Detection failure must stop before invoking any helper.
+rm "$HOME/helper_arguments"
+export CA2_SUNOS_VARIANT=bad/path
+if sh "$SCRIPT_ROOT/bin/patch_shell" >/dev/null 2>&1; then
+   echo 'Invalid variant unexpectedly succeeded' >&2
+   exit 1
+fi
+test ! -e "$HOME/helper_arguments"
+export CA2_SUNOS_VARIANT=solaris-11.4
+export CA2_TEST_HELPER_EXIT=23
+status=0
+sh "$SCRIPT_ROOT/bin/patch_shell" || status=$?
+test "$status" -eq 23
+printf '%s\n' 'All seven callers use variant/architecture; independent detection, quoting, failure and exit status checks passed'

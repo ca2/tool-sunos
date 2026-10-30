@@ -57,7 +57,7 @@ while read line; do
 
    touch $APP_DIR/.link_object/_matter.zip.o
 
-   application_build_helper "$APP_DIR"
+   sh "$HOME/code/operating_system/tool/bin/run_application_build_helper" "$APP_DIR"
 
 #   dir=`pwd`
 

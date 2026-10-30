@@ -1,0 +1,12 @@
+#!/bin/sh
+
+# Bootstrap with the shell-only detector; do not look up the helper in PATH.
+TOOL_BIN="$HOME/code/operating_system/tool/bin"
+SUNOS_VARIANT=$("$TOOL_BIN/sunos_variant") || exit 1
+ARCHITECTURE=$(uname -m) || exit 1
+if [ -z "$SUNOS_VARIANT" ] || [ -z "$ARCHITECTURE" ]; then
+   printf '%s\n' 'Cannot determine the SunOS variant or architecture' >&2
+   exit 1
+fi
+
+exec "$TOOL_BIN/$SUNOS_VARIANT/$ARCHITECTURE/application_build_helper" "$@"

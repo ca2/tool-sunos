@@ -1,10 +1,3 @@
 #!/bin/sh
 
-
-ARCHITECTURE=`eval uname -m`
-
-
-$HOME/code/operating_system/tool/bin/$ARCHITECTURE/application_build_helper --unpatch-shell
-
-
-
+exec sh "$HOME/code/operating_system/tool/bin/run_application_build_helper" --unpatch-shell "$@"
