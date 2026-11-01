@@ -1,89 +1,45 @@
-#!/bin/sh
+#!/usr/bin/env python3
+"""Cycle the XKB keyboard sources configured in GNOME."""
+import ast
+import subprocess
+import sys
 
-LIST="$HOME/bin/current.keyboard_layout_list"
+SCHEMA = "org.gnome.desktop.input-sources"
 
-if [ ! -r "$LIST" ]; then
-    echo "Keyboard layout list not found: $LIST" >&2
-    exit 1
-fi
+def run(*args):
+    return subprocess.check_output(args, text=True).strip()
 
-# Read the current XKB configuration.
-CONFIG=$(/usr/bin/setxkbmap -query) || exit 1
+def setting(key):
+    value = run("gsettings", "get", SCHEMA, key)
+    # Empty GVariant arrays can carry a type annotation.
+    if value.startswith("@"):
+        value = value.split(" ", 1)[1]
+    return ast.literal_eval(value)
 
-CURRENT_LAYOUT=$(printf '%s\n' "$CONFIG" |
-    /usr/bin/nawk '$1 == "layout:" { print $2; exit }')
-
-CURRENT_VARIANT=$(printf '%s\n' "$CONFIG" |
-    /usr/bin/nawk '$1 == "variant:" { print $2; exit }')
-
-# Find the next layout in the configuration file.
-NEXT=$(/usr/bin/nawk \
-    -v current_layout="$CURRENT_LAYOUT" \
-    -v current_variant="$CURRENT_VARIANT" '
-{
-    # Remove comments.
-    sub(/#.*/, "", $0)
-
-    # Ignore empty lines.
-    if (NF == 0)
-        next
-
-    if (NF > 2) {
-        printf "Invalid layout entry at line %d\n", NR > "/dev/stderr"
-        error = 1
-        exit 2
-    }
-
-    count++
-
-    layouts[count] = $1
-    variants[count] = (NF >= 2 ? $2 : "")
-
-    if (layouts[count] == current_layout &&
-        variants[count] == current_variant) {
-        active = count
-    }
-}
-
-END {
-    if (error)
-        exit 2
-
-    if (count == 0) {
-        print "No keyboard layouts configured" > "/dev/stderr"
-        exit 1
-    }
-
-    if (active > 0)
-        next_index = (active % count) + 1
-    else
-        next_index = 1
-
-    printf "%s|%s\n", layouts[next_index], variants[next_index]
-}
-' "$LIST") || exit 1
-
-# Extract layout and optional variant.
-LAYOUT=${NEXT%%|*}
-VARIANT=${NEXT#*|}
-
-# Apply the selected layout using the Solaris Sun keyboard model.
-/usr/bin/setxkbmap \
-    -rules base \
-    -model sun_type6_usb \
-    -layout "$LAYOUT" \
-    -variant "$VARIANT" \
-    -option "" \
-    -option "lv3:ralt_switch" || exit 1
-
-DESCRIPTION="$LAYOUT"
-if [ -n "$VARIANT" ]; then
-    DESCRIPTION="$LAYOUT ($VARIANT)"
-fi
-
-printf 'Keyboard layout: %s\n' "$DESCRIPTION"
-
-# Optional desktop notification.
-if command -v notify-send >/dev/null 2>&1; then
-    notify-send "Keyboard layout" "$DESCRIPTION"
-fi
+try:
+    sources = setting("sources")
+    layouts = [(i, source.partition("+")[0], source.partition("+")[2])
+               for i, (kind, source) in enumerate(sources) if kind == "xkb"]
+    if not layouts:
+        raise RuntimeError("No XKB layouts configured in GNOME Settings")
+    config = dict(line.split(":", 1) for line in run("/usr/bin/setxkbmap", "-query").splitlines() if ":" in line)
+    active = (config.get("layout", "").strip(), config.get("variant", "").strip())
+    index = next((n for n, (_, layout, variant) in enumerate(layouts)
+                  if (layout, variant) == active), None)
+    if index is None:
+        # Recover from missing/malformed XKB properties using GNOME's index.
+        current = run("gsettings", "get", SCHEMA, "current").split()[-1]
+        index = next((n for n, item in enumerate(layouts) if item[0] == int(current)), -1)
+    source_index, layout, variant = layouts[(index + 1) % len(layouts)]
+    options = setting("xkb-options")
+    if "lv3:ralt_switch" not in options:
+        options.append("lv3:ralt_switch")
+    subprocess.check_call(["/usr/bin/setxkbmap", "-rules", "base", "-model",
+        config.get("model", "sun_type6_usb").strip() or "sun_type6_usb",
+        "-layout", layout, "-variant", variant, "-option", "", "-option", ",".join(options)])
+    subprocess.check_call(["gsettings", "set", SCHEMA, "current", str(source_index)])
+    description = layout + (" (" + variant + ")" if variant else "")
+    print("Keyboard layout: " + description)
+except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
+    print("toggle-layout: " + str(error), file=sys.stderr)
+    sys.exit(1)

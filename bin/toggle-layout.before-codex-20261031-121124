@@ -1,0 +1,89 @@
+#!/bin/sh
+
+LIST="$HOME/bin/current.keyboard_layout_list"
+
+if [ ! -r "$LIST" ]; then
+    echo "Keyboard layout list not found: $LIST" >&2
+    exit 1
+fi
+
+# Read the current XKB configuration.
+CONFIG=$(/usr/bin/setxkbmap -query) || exit 1
+
+CURRENT_LAYOUT=$(printf '%s\n' "$CONFIG" |
+    /usr/bin/nawk '$1 == "layout:" { print $2; exit }')
+
+CURRENT_VARIANT=$(printf '%s\n' "$CONFIG" |
+    /usr/bin/nawk '$1 == "variant:" { print $2; exit }')
+
+# Find the next layout in the configuration file.
+NEXT=$(/usr/bin/nawk \
+    -v current_layout="$CURRENT_LAYOUT" \
+    -v current_variant="$CURRENT_VARIANT" '
+{
+    # Remove comments.
+    sub(/#.*/, "", $0)
+
+    # Ignore empty lines.
+    if (NF == 0)
+        next
+
+    if (NF > 2) {
+        printf "Invalid layout entry at line %d\n", NR > "/dev/stderr"
+        error = 1
+        exit 2
+    }
+
+    count++
+
+    layouts[count] = $1
+    variants[count] = (NF >= 2 ? $2 : "")
+
+    if (layouts[count] == current_layout &&
+        variants[count] == current_variant) {
+        active = count
+    }
+}
+
+END {
+    if (error)
+        exit 2
+
+    if (count == 0) {
+        print "No keyboard layouts configured" > "/dev/stderr"
+        exit 1
+    }
+
+    if (active > 0)
+        next_index = (active % count) + 1
+    else
+        next_index = 1
+
+    printf "%s|%s\n", layouts[next_index], variants[next_index]
+}
+' "$LIST") || exit 1
+
+# Extract layout and optional variant.
+LAYOUT=${NEXT%%|*}
+VARIANT=${NEXT#*|}
+
+# Apply the selected layout using the Solaris Sun keyboard model.
+/usr/bin/setxkbmap \
+    -rules base \
+    -model sun_type6_usb \
+    -layout "$LAYOUT" \
+    -variant "$VARIANT" \
+    -option "" \
+    -option "lv3:ralt_switch" || exit 1
+
+DESCRIPTION="$LAYOUT"
+if [ -n "$VARIANT" ]; then
+    DESCRIPTION="$LAYOUT ($VARIANT)"
+fi
+
+printf 'Keyboard layout: %s\n' "$DESCRIPTION"
+
+# Optional desktop notification.
+if command -v notify-send >/dev/null 2>&1; then
+    notify-send "Keyboard layout" "$DESCRIPTION"
+fi
